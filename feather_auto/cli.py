@@ -80,9 +80,30 @@ def write_status(path: str | None, **status: Any) -> None:
         "pid": os.getpid(),
         **status,
     }
-    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(status_path)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    last_error: OSError | None = None
+    for attempt in range(6):
+        tmp_path = status_path.with_name(f".{status_path.name}.{os.getpid()}.{attempt}.tmp")
+        try:
+            tmp_path.write_text(text, encoding="utf-8")
+            tmp_path.replace(status_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            time.sleep(0.05 * (attempt + 1))
+
+    try:
+        status_path.write_text(text, encoding="utf-8")
+        return
+    except OSError as exc:
+        last_error = exc
+
+    if last_error:
+        print(f"STATUS_WRITE_FAILED {last_error}", file=sys.stderr, flush=True)
 
 
 def read_clipboard() -> str:
@@ -556,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
                     batch=summary,
                     saved=save_path,
                 )
+                print(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
 
             print("\a", end="", flush=True)
             if args.open:

@@ -14,3 +14,4 @@ dependencies = [
 
 [project.scripts]
 feather-auto = "feather_auto.cli:main"
+feather-dashboard = "feather_auto.dashboard_server:main"

@@ -84,17 +84,18 @@ Get-Content .\feather-auto.log -Wait -Tail 80
 ## Dashboard
 
 The repo includes a small static dashboard at `dashboard.html`. It expects these
-default files:
+default runtime files:
 
 ```text
 outputs/raw_creation_claim_monitor.log
 outputs/raw_creation_claim_status.json
+outputs/current_feather_request.curl.txt
 ```
 
-Start a local static server from the repo root:
+Start the local dashboard server from the repo root:
 
 ```powershell
-python -m http.server 8765 --bind 127.0.0.1
+python -m feather_auto.dashboard_server --port 8765
 ```
 
 Then open:
@@ -102,6 +103,13 @@ Then open:
 ```text
 http://127.0.0.1:8765/dashboard.html
 ```
+
+The dashboard can:
+
+- Save a pasted Feather cURL locally.
+- Start or stop the monitor process.
+- Configure campaign id, batch suffix, random interval min/max, claim mode, and open-on-success.
+- Show current status JSON and live log tail.
 
 Run one check and exit:
 

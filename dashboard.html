@@ -6,48 +6,45 @@
     <title>Feather Auto Monitor</title>
     <style>
       :root {
-        color-scheme: light dark;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #111827;
+        background: #101624;
         color: #e5e7eb;
+      }
+
+      * {
+        box-sizing: border-box;
       }
 
       body {
         margin: 0;
         min-height: 100vh;
-        background: #111827;
+        background: #101624;
       }
 
       main {
-        max-width: 1180px;
+        max-width: 1240px;
         margin: 0 auto;
-        padding: 24px;
+        padding: 22px;
       }
 
       header {
         display: flex;
         justify-content: space-between;
-        gap: 16px;
         align-items: center;
-        margin-bottom: 20px;
+        gap: 16px;
+        margin-bottom: 16px;
       }
 
       h1 {
-        font-size: 22px;
         margin: 0;
-        font-weight: 650;
+        font-size: 22px;
+        font-weight: 680;
       }
 
       .meta {
+        margin-top: 4px;
         color: #9ca3af;
         font-size: 13px;
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 12px;
-        margin-bottom: 16px;
       }
 
       .panel {
@@ -57,10 +54,26 @@
         padding: 14px;
       }
 
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .two {
+        display: grid;
+        grid-template-columns: 420px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+      }
+
+      label,
       .label {
+        display: block;
+        margin-bottom: 6px;
         color: #9ca3af;
         font-size: 12px;
-        margin-bottom: 6px;
         text-transform: uppercase;
       }
 
@@ -83,9 +96,9 @@
         background: #9ca3af;
       }
 
+      .dot.running,
       .dot.polling,
-      .dot.sleeping,
-      .dot.running {
+      .dot.sleeping {
         background: #22c55e;
       }
 
@@ -101,6 +114,81 @@
         background: #f97316;
       }
 
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid #4b5563;
+        border-radius: 6px;
+        background: #111827;
+        color: #f9fafb;
+        padding: 9px 10px;
+        font: inherit;
+      }
+
+      textarea {
+        min-height: 170px;
+        resize: vertical;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .checkrow {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        margin: 12px 0;
+      }
+
+      .checkrow label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        text-transform: none;
+        color: #e5e7eb;
+      }
+
+      .checkrow input {
+        width: auto;
+      }
+
+      button {
+        border: 1px solid #4b5563;
+        border-radius: 6px;
+        background: #374151;
+        color: #f9fafb;
+        padding: 9px 12px;
+        cursor: pointer;
+      }
+
+      button.primary {
+        border-color: #0284c7;
+        background: #0369a1;
+      }
+
+      button.danger {
+        border-color: #b91c1c;
+        background: #991b1b;
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
       pre {
         margin: 0;
         white-space: pre-wrap;
@@ -111,37 +199,35 @@
       }
 
       .log {
-        min-height: 480px;
-        max-height: calc(100vh - 300px);
+        min-height: 520px;
+        max-height: calc(100vh - 280px);
         overflow: auto;
         background: #030712;
       }
 
-      button {
-        border: 1px solid #4b5563;
-        background: #374151;
-        color: #f9fafb;
-        border-radius: 6px;
-        padding: 8px 12px;
-        cursor: pointer;
+      .message {
+        min-height: 20px;
+        color: #fbbf24;
+        font-size: 13px;
+        margin-top: 10px;
       }
 
-      button:hover {
-        background: #4b5563;
-      }
-
-      @media (max-width: 800px) {
+      @media (max-width: 920px) {
         main {
-          padding: 16px;
+          padding: 14px;
         }
 
-        header {
-          align-items: flex-start;
-          flex-direction: column;
+        header,
+        .two {
+          display: block;
         }
 
         .grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .panel {
+          margin-bottom: 12px;
         }
       }
     </style>
@@ -151,15 +237,22 @@
       <header>
         <div>
           <h1>Feather Auto Monitor</h1>
-          <div class="meta" id="paths"></div>
+          <div class="meta" id="paths">Loading paths...</div>
         </div>
-        <button id="toggle">Pause</button>
+        <div class="actions">
+          <button id="refresh">Refresh</button>
+          <button id="stop" class="danger">Stop</button>
+        </div>
       </header>
 
       <section class="grid">
         <div class="panel">
+          <div class="label">Process</div>
+          <div class="value status"><span class="dot" id="dot"></span><span id="running">unknown</span></div>
+        </div>
+        <div class="panel">
           <div class="label">State</div>
-          <div class="value status"><span class="dot" id="dot"></span><span id="state">loading</span></div>
+          <div class="value" id="state">-</div>
         </div>
         <div class="panel">
           <div class="label">Unclaimed</div>
@@ -169,33 +262,80 @@
           <div class="label">Next Sleep</div>
           <div class="value" id="sleep">-</div>
         </div>
+      </section>
+
+      <section class="two">
         <div class="panel">
-          <div class="label">Updated</div>
-          <div class="value" id="updated">-</div>
+          <label for="curlText">Feather cURL</label>
+          <textarea id="curlText" placeholder="Paste Copy-as-cURL here. It is saved only in outputs/current_feather_request.curl.txt."></textarea>
+
+          <div class="row" style="margin-top: 12px">
+            <div>
+              <label for="campaignId">Campaign ID</label>
+              <input id="campaignId" value="929712fc-fa2a-45bc-94df-2ae6d445b2ca" />
+            </div>
+            <div>
+              <label for="batchSuffix">Batch Suffix</label>
+              <input id="batchSuffix" value="-raw-creation" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label for="intervalMin">Interval Min</label>
+              <input id="intervalMin" type="number" min="1" step="0.1" value="1.2" />
+            </div>
+            <div>
+              <label for="intervalMax">Interval Max</label>
+              <input id="intervalMax" type="number" min="1" step="0.1" value="3.8" />
+            </div>
+          </div>
+
+          <div class="checkrow">
+            <label><input id="claim" type="checkbox" checked /> Claim</label>
+            <label><input id="openTask" type="checkbox" checked /> Open task on success</label>
+          </div>
+
+          <div class="actions">
+            <button id="saveCurl">Save cURL</button>
+            <button id="start" class="primary">Start / Restart</button>
+            <button id="stop2" class="danger">Stop</button>
+          </div>
+          <div class="message" id="message"></div>
         </div>
-      </section>
 
-      <section class="panel">
-        <div class="label">Current Task</div>
-        <pre id="task">-</pre>
-      </section>
-
-      <section class="panel log" style="margin-top: 16px">
-        <div class="label">Log</div>
-        <pre id="log">Loading...</pre>
+        <div>
+          <section class="panel">
+            <div class="label">Current Task</div>
+            <pre id="task">-</pre>
+          </section>
+          <section class="panel log" style="margin-top: 12px">
+            <div class="label">Log</div>
+            <pre id="log">Loading...</pre>
+          </section>
+        </div>
       </section>
     </main>
 
     <script>
-      const statusPath = "outputs/raw_creation_claim_status.json";
-      const logPath = "outputs/raw_creation_claim_monitor.log";
-      let paused = false;
+      let latest = null;
 
-      document.getElementById("paths").textContent = `${statusPath} | ${logPath}`;
-      document.getElementById("toggle").addEventListener("click", () => {
-        paused = !paused;
-        document.getElementById("toggle").textContent = paused ? "Resume" : "Pause";
-      });
+      const $ = (id) => document.getElementById(id);
+
+      function setMessage(text) {
+        $("message").textContent = text || "";
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+          ...options,
+        });
+        const body = await response.json();
+        if (!response.ok || body.ok === false) throw new Error(body.error || response.statusText);
+        return body;
+      }
 
       function ageText(iso) {
         if (!iso) return "-";
@@ -204,53 +344,82 @@
         return `${seconds}s ago`;
       }
 
-      async function fetchText(path) {
-        const response = await fetch(`${path}?t=${Date.now()}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        return response.text();
+      async function refresh() {
+        latest = await api("/api/state");
+        const status = latest.status || {};
+        const running = latest.running;
+        const state = running ? status.state || "running" : "stopped";
+        $("running").textContent = running ? `running (${latest.pid})` : "stopped";
+        $("state").textContent = state;
+        $("unclaimed").textContent = status.unclaimed_count ?? "-";
+        $("sleep").textContent = status.next_sleep_seconds == null ? "-" : `${status.next_sleep_seconds}s`;
+        $("dot").className = `dot ${running ? state : ""}`;
+        $("paths").textContent = `${latest.paths.log} | ${latest.paths.status}`;
+        $("task").textContent = JSON.stringify(
+          {
+            updated: ageText(status.updated_at),
+            task_id: status.task_id,
+            title: status.title,
+            batch: status.batch,
+            saved: status.saved,
+            curl_saved: latest.curl_saved,
+          },
+          null,
+          2,
+        );
+        $("log").textContent = latest.log_tail || "No log yet.";
+        $("log").parentElement.scrollTop = $("log").parentElement.scrollHeight;
       }
 
-      async function tick() {
-        if (paused) return;
-        try {
-          const status = JSON.parse(await fetchText(statusPath));
-          const state = status.state || "unknown";
-          const dot = document.getElementById("dot");
-          dot.className = `dot ${state}`;
-          document.getElementById("state").textContent = state;
-          document.getElementById("unclaimed").textContent = status.unclaimed_count ?? "-";
-          document.getElementById("sleep").textContent =
-            status.next_sleep_seconds == null ? "-" : `${status.next_sleep_seconds}s`;
-          document.getElementById("updated").textContent = ageText(status.updated_at);
-          document.getElementById("task").textContent = JSON.stringify(
-            {
-              task_id: status.task_id,
-              title: status.title,
-              batch: status.batch,
-              saved: status.saved,
-            },
-            null,
-            2,
-          );
-        } catch (error) {
-          document.getElementById("state").textContent = "status unavailable";
-          document.getElementById("task").textContent = String(error);
-        }
-
-        try {
-          const text = await fetchText(logPath);
-          const lines = text.trimEnd().split(/\r?\n/);
-          const tail = lines.slice(-220).join("\n");
-          const log = document.getElementById("log");
-          log.textContent = tail || "No log yet.";
-          log.parentElement.scrollTop = log.parentElement.scrollHeight;
-        } catch (error) {
-          document.getElementById("log").textContent = String(error);
-        }
+      function configFromForm() {
+        return {
+          curlText: $("curlText").value,
+          campaignId: $("campaignId").value.trim(),
+          batchSuffix: $("batchSuffix").value.trim(),
+          intervalMin: Number($("intervalMin").value),
+          intervalMax: Number($("intervalMax").value),
+          claim: $("claim").checked,
+          openTask: $("openTask").checked,
+        };
       }
 
-      tick();
-      setInterval(tick, 1000);
+      async function start() {
+        setMessage("Starting...");
+        const result = await api("/api/start", {
+          method: "POST",
+          body: JSON.stringify(configFromForm()),
+        });
+        $("curlText").value = "";
+        setMessage(`Started PID ${result.pid}`);
+        await refresh();
+      }
+
+      async function stop() {
+        setMessage("Stopping...");
+        const result = await api("/api/stop", { method: "POST", body: "{}" });
+        setMessage(result.stopped ? "Stopped." : "No running monitor.");
+        await refresh();
+      }
+
+      async function saveCurl() {
+        setMessage("Saving cURL...");
+        await api("/api/save-curl", {
+          method: "POST",
+          body: JSON.stringify({ curlText: $("curlText").value }),
+        });
+        $("curlText").value = "";
+        setMessage("cURL saved.");
+        await refresh();
+      }
+
+      $("refresh").addEventListener("click", () => refresh().catch((error) => setMessage(error.message)));
+      $("start").addEventListener("click", () => start().catch((error) => setMessage(error.message)));
+      $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
+      $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
+      $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
+
+      refresh().catch((error) => setMessage(error.message));
+      setInterval(() => refresh().catch(() => {}), 1000);
     </script>
   </body>
 </html>
