@@ -59,6 +59,22 @@ Monitor and claim the first matching task:
 python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt
 ```
 
+If a claim attempt loses the race, for example Feather returns `NOT_FOUND`, the
+CLI logs `CLAIM_FAILED_CONTINUING` and keeps polling. It stops only after a
+successful claim or an unrecoverable error such as expired/invalid auth.
+
+To keep a live log file:
+
+```powershell
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt *> feather-auto.log
+```
+
+Watch it in another PowerShell window:
+
+```powershell
+Get-Content .\feather-auto.log -Wait -Tail 80
+```
+
 Run one check and exit:
 
 ```powershell

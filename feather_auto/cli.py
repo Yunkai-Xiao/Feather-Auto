@@ -256,12 +256,15 @@ def claim_payload(task_id: str) -> list[dict[str, Any]]:
 
 
 def claim_task(headers: dict[str, str], task_id: str) -> requests.Response:
-    return requests.post(
+    response = requests.post(
         f"{BASE_URL}/api/graphql",
         headers=headers,
         data=json.dumps(claim_payload(task_id), separators=(",", ":")),
         timeout=20,
     )
+    if response.status_code in (401, 403):
+        raise RuntimeError(f"auth failed during claim: HTTP {response.status_code} {response.text[:160]}")
+    return response
 
 
 def current_user(headers: dict[str, str]) -> dict[str, Any]:
@@ -314,11 +317,22 @@ def print_claim_result(
     campaign_id: str,
     page_size: int,
     task_id: str,
-) -> None:
+) -> bool:
     response = claim_task(claim_headers, task_id)
     print(f"CLAIM status={response.status_code}", flush=True)
+    claim_succeeded = False
     try:
-        print(json.dumps(response.json(), ensure_ascii=False, indent=2)[:2000], flush=True)
+        body = response.json()
+        print(json.dumps(body, ensure_ascii=False, indent=2)[:2000], flush=True)
+        first = body[0] if isinstance(body, list) and body else {}
+        update = first.get("data", {}).get("updateTaskStatus") if isinstance(first, dict) else None
+        claim_succeeded = (
+            response.status_code == 200
+            and isinstance(update, dict)
+            and update.get("id") == task_id
+            and update.get("workflowStatus") == "IN_PROGRESS"
+            and not first.get("errors")
+        )
     except ValueError:
         print(response.text[:2000], flush=True)
 
@@ -326,7 +340,7 @@ def print_claim_result(
     verified_task = verify_task_assignment(search_headers, campaign_id, page_size, task_id)
     if not verified_task:
         print("VERIFY task_not_found_after_claim", flush=True)
-        return
+        return claim_succeeded
 
     verification = {
         "expected_user_id": user.get("id"),
@@ -338,6 +352,12 @@ def print_claim_result(
         "workflow_status": verified_task.get("workflow_status"),
     }
     print("VERIFY " + json.dumps(verification, ensure_ascii=False), flush=True)
+    if user.get("id") and (
+        verified_task.get("claimed_by_user_id") == user.get("id")
+        or verified_task.get("active_user_id") == user.get("id")
+    ):
+        claim_succeeded = True
+    return claim_succeeded
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -410,7 +430,16 @@ def main(argv: list[str] | None = None) -> int:
                     task_id=task_id,
                     task_kind=args.task_kind or task.get("kind"),
                 )
-                print_claim_result(claim_headers, search_headers, args.campaign_id, args.page_size, task_id)
+                claim_succeeded = print_claim_result(
+                    claim_headers,
+                    search_headers,
+                    args.campaign_id,
+                    args.page_size,
+                    task_id,
+                )
+                if not claim_succeeded:
+                    print(f"CLAIM_FAILED_CONTINUING {task_id}", flush=True)
+                    continue
 
             print("\a", end="", flush=True)
             if args.open:
