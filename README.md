@@ -53,6 +53,9 @@ Monitor only, do not claim:
 python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --curl-file my_feather_request.curl.txt
 ```
 
+When claim and open-on-success are both disabled, found tasks are logged with
+`FOUND_CONTINUING` and the monitor keeps polling for later new tasks.
+
 Monitor and claim the first matching task:
 
 ```powershell

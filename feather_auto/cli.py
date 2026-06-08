@@ -638,6 +638,10 @@ def run_monitor(
                 )
                 emit(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
 
+            if not config.claim and not config.open_task:
+                emit(f"FOUND_CONTINUING {task_id}", flush=True)
+                continue
+
             emit("\a", end="", flush=True)
             if config.open_task:
                 webbrowser.open(task_url(task_id))
