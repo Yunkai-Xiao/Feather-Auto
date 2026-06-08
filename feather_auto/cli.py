@@ -533,7 +533,8 @@ def run_monitor(
 
     allowed_batch_refs = batch_refs_for_suffix(search_headers, config.campaign_id, config.batch_suffix)
     update_status(
-        state="running",
+        state="monitoring",
+        phase="ready",
         campaign_id=config.campaign_id,
         claim=config.claim,
         batch_suffix=config.batch_suffix,
@@ -562,7 +563,8 @@ def run_monitor(
         tasks = data.get("tasks", [])
         emit(f"[{now}] tasks={len(tasks)}", flush=True)
         update_status(
-            state="polling",
+            state="monitoring",
+            phase="polling",
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_suffix=config.batch_suffix,
@@ -663,7 +665,8 @@ def run_monitor(
         delay = next_sleep(min_interval, max_interval)
         emit(f"SLEEP {delay:.2f}s", flush=True)
         update_status(
-            state="sleeping",
+            state="monitoring",
+            phase="sleeping",
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_suffix=config.batch_suffix,

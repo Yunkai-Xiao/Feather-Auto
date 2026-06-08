@@ -20,6 +20,20 @@ LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
+DEFAULT_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
+CAMPAIGNS = [
+    {
+        "id": DEFAULT_CAMPAIGN_ID,
+        "name": "Raw creation campaign",
+    }
+]
+
+
+def campaign_name(campaign_id: str) -> str:
+    for campaign in CAMPAIGNS:
+        if campaign["id"] == campaign_id:
+            return campaign["name"]
+    return campaign_id
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -111,7 +125,7 @@ class MonitorController:
         if not CURL_FILE.exists():
             raise ValueError("Paste a Feather Copy-as-cURL before starting.")
 
-        campaign_id = str(config.get("campaignId") or "929712fc-fa2a-45bc-94df-2ae6d445b2ca").strip()
+        campaign_id = str(config.get("campaignId") or DEFAULT_CAMPAIGN_ID).strip()
         batch_suffix = str(config.get("batchSuffix") or "-raw-creation").strip()
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
@@ -160,6 +174,7 @@ class MonitorController:
             self._status = {
                 "state": "starting",
                 "campaign_id": campaign_id,
+                "campaign_name": campaign_name(campaign_id),
                 "claim": monitor_config.claim,
                 "batch_suffix": batch_suffix,
             }
@@ -180,7 +195,9 @@ class MonitorController:
             worker_id = self._thread.ident if self._thread else None
             status = dict(self._status)
             last_error = self._last_error
-            if not running and status.get("state") in {"starting", "running", "polling", "sleeping", "found", "stopping"}:
+            if status.get("campaign_id") and not status.get("campaign_name"):
+                status = {**status, "campaign_name": campaign_name(str(status["campaign_id"]))}
+            if not running and status.get("state") in {"starting", "running", "monitoring", "polling", "sleeping", "found", "stopping"}:
                 status = {**status, "state": "stopped"}
 
         return {
@@ -189,6 +206,7 @@ class MonitorController:
             "server_pid": os.getpid(),
             "worker_id": worker_id if running else None,
             "curl_saved": CURL_FILE.exists(),
+            "campaigns": CAMPAIGNS,
             "status": status,
             "log_tail": tail(LOG_FILE),
             "stderr_tail": last_error,

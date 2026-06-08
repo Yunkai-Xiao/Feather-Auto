@@ -97,6 +97,7 @@
       }
 
       .dot.running,
+      .dot.monitoring,
       .dot.polling,
       .dot.sleeping {
         background: #22c55e;
@@ -115,6 +116,7 @@
       }
 
       input,
+      select,
       textarea {
         width: 100%;
         border: 1px solid #4b5563;
@@ -259,7 +261,7 @@
           <div class="value" id="unclaimed">-</div>
         </div>
         <div class="panel">
-          <div class="label">Next Sleep</div>
+          <div class="label">Next Poll</div>
           <div class="value" id="sleep">-</div>
         </div>
       </section>
@@ -271,8 +273,10 @@
 
           <div class="row" style="margin-top: 12px">
             <div>
-              <label for="campaignId">Campaign ID</label>
-              <input id="campaignId" value="929712fc-fa2a-45bc-94df-2ae6d445b2ca" />
+              <label for="campaignId">Campaign</label>
+              <select id="campaignId">
+                <option value="929712fc-fa2a-45bc-94df-2ae6d445b2ca">Raw creation campaign</option>
+              </select>
             </div>
             <div>
               <label for="batchSuffix">Batch Suffix</label>
@@ -344,20 +348,43 @@
         return `${seconds}s ago`;
       }
 
+      function renderCampaigns(campaigns, selectedId) {
+        const select = $("campaignId");
+        const items = Array.isArray(campaigns) && campaigns.length ? campaigns : [];
+        const signature = JSON.stringify(items.map((campaign) => [campaign.id, campaign.name]));
+        const current = select.value;
+        if (select.dataset.signature !== signature) {
+          select.innerHTML = "";
+          for (const campaign of items) {
+            const option = document.createElement("option");
+            option.value = campaign.id;
+            option.textContent = campaign.name || campaign.id;
+            select.appendChild(option);
+          }
+          select.dataset.signature = signature;
+        }
+        const nextValue = current || selectedId || items[0]?.id || "";
+        if (nextValue) select.value = nextValue;
+      }
+
       async function refresh() {
         latest = await api("/api/state");
         const status = latest.status || {};
         const running = latest.running;
+        renderCampaigns(latest.campaigns, status.campaign_id);
         const state = running ? status.state || "running" : "stopped";
         $("running").textContent = running ? `running (${latest.worker_id || "worker"})` : "stopped";
         $("state").textContent = state;
         $("unclaimed").textContent = status.unclaimed_count ?? "-";
-        $("sleep").textContent = status.next_sleep_seconds == null ? "-" : `${status.next_sleep_seconds}s`;
+        $("sleep").textContent =
+          status.next_sleep_seconds == null ? (running && status.phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`;
         $("dot").className = `dot ${running ? state : ""}`;
         $("paths").textContent = `${latest.paths.log} | ${latest.paths.status}`;
         $("task").textContent = JSON.stringify(
           {
             updated: ageText(status.updated_at),
+            campaign: status.campaign_name || status.campaign_id,
+            phase: status.phase,
             task_id: status.task_id,
             title: status.title,
             batch: status.batch,

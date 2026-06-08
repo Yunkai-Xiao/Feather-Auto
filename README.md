@@ -111,8 +111,12 @@ The dashboard can:
 
 - Save a pasted Feather cURL locally.
 - Start or stop the in-process monitor worker.
-- Configure campaign id, batch suffix, random interval min/max, claim mode, and open-on-success.
+- Select a campaign, then configure batch suffix, random interval min/max, claim mode, and open-on-success.
 - Show current status JSON and live log tail.
+
+While the worker is active, the dashboard reports the main state as
+`monitoring`. The lower-level `phase` field shows whether it is currently
+polling Feather or waiting for the next poll interval.
 
 The dashboard no longer starts a separate CLI subprocess for monitoring. The
 server owns a background worker thread and stops it with an in-memory stop
