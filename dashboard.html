@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feather Auto Monitor</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #111827;
+        color: #e5e7eb;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #111827;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        font-size: 22px;
+        margin: 0;
+        font-weight: 650;
+      }
+
+      .meta {
+        color: #9ca3af;
+        font-size: 13px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .panel {
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 14px;
+      }
+
+      .label {
+        color: #9ca3af;
+        font-size: 12px;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+      }
+
+      .value {
+        font-size: 18px;
+        font-weight: 650;
+        word-break: break-word;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #9ca3af;
+      }
+
+      .dot.polling,
+      .dot.sleeping,
+      .dot.running {
+        background: #22c55e;
+      }
+
+      .dot.found {
+        background: #eab308;
+      }
+
+      .dot.claimed {
+        background: #38bdf8;
+      }
+
+      .dot.claim_failed_continuing {
+        background: #f97316;
+      }
+
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .log {
+        min-height: 480px;
+        max-height: calc(100vh - 300px);
+        overflow: auto;
+        background: #030712;
+      }
+
+      button {
+        border: 1px solid #4b5563;
+        background: #374151;
+        color: #f9fafb;
+        border-radius: 6px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #4b5563;
+      }
+
+      @media (max-width: 800px) {
+        main {
+          padding: 16px;
+        }
+
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Feather Auto Monitor</h1>
+          <div class="meta" id="paths"></div>
+        </div>
+        <button id="toggle">Pause</button>
+      </header>
+
+      <section class="grid">
+        <div class="panel">
+          <div class="label">State</div>
+          <div class="value status"><span class="dot" id="dot"></span><span id="state">loading</span></div>
+        </div>
+        <div class="panel">
+          <div class="label">Unclaimed</div>
+          <div class="value" id="unclaimed">-</div>
+        </div>
+        <div class="panel">
+          <div class="label">Next Sleep</div>
+          <div class="value" id="sleep">-</div>
+        </div>
+        <div class="panel">
+          <div class="label">Updated</div>
+          <div class="value" id="updated">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="label">Current Task</div>
+        <pre id="task">-</pre>
+      </section>
+
+      <section class="panel log" style="margin-top: 16px">
+        <div class="label">Log</div>
+        <pre id="log">Loading...</pre>
+      </section>
+    </main>
+
+    <script>
+      const statusPath = "outputs/raw_creation_claim_status.json";
+      const logPath = "outputs/raw_creation_claim_monitor.log";
+      let paused = false;
+
+      document.getElementById("paths").textContent = `${statusPath} | ${logPath}`;
+      document.getElementById("toggle").addEventListener("click", () => {
+        paused = !paused;
+        document.getElementById("toggle").textContent = paused ? "Resume" : "Pause";
+      });
+
+      function ageText(iso) {
+        if (!iso) return "-";
+        const then = new Date(iso.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+        const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+        return `${seconds}s ago`;
+      }
+
+      async function fetchText(path) {
+        const response = await fetch(`${path}?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        return response.text();
+      }
+
+      async function tick() {
+        if (paused) return;
+        try {
+          const status = JSON.parse(await fetchText(statusPath));
+          const state = status.state || "unknown";
+          const dot = document.getElementById("dot");
+          dot.className = `dot ${state}`;
+          document.getElementById("state").textContent = state;
+          document.getElementById("unclaimed").textContent = status.unclaimed_count ?? "-";
+          document.getElementById("sleep").textContent =
+            status.next_sleep_seconds == null ? "-" : `${status.next_sleep_seconds}s`;
+          document.getElementById("updated").textContent = ageText(status.updated_at);
+          document.getElementById("task").textContent = JSON.stringify(
+            {
+              task_id: status.task_id,
+              title: status.title,
+              batch: status.batch,
+              saved: status.saved,
+            },
+            null,
+            2,
+          );
+        } catch (error) {
+          document.getElementById("state").textContent = "status unavailable";
+          document.getElementById("task").textContent = String(error);
+        }
+
+        try {
+          const text = await fetchText(logPath);
+          const lines = text.trimEnd().split(/\r?\n/);
+          const tail = lines.slice(-220).join("\n");
+          const log = document.getElementById("log");
+          log.textContent = tail || "No log yet.";
+          log.parentElement.scrollTop = log.parentElement.scrollHeight;
+        } catch (error) {
+          document.getElementById("log").textContent = String(error);
+        }
+      }
+
+      tick();
+      setInterval(tick, 1000);
+    </script>
+  </body>
+</html>

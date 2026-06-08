@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -42,6 +43,46 @@ mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersion
   }
 }
 """.strip()
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
+def setup_log_file(path: str | None) -> None:
+    if not path:
+        return
+    log_path = Path(path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = log_path.open("a", encoding="utf-8", buffering=1)
+    sys.stdout = Tee(sys.stdout, handle)
+    sys.stderr = Tee(sys.stderr, handle)
+
+
+def write_status(path: str | None, **status: Any) -> None:
+    if not path:
+        return
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "pid": os.getpid(),
+        **status,
+    }
+    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(status_path)
 
 
 def read_clipboard() -> str:
@@ -365,6 +406,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--curl-file", help="File containing a Feather Copy-as-cURL request.")
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--interval-min", type=float, help="Random sleep lower bound, in seconds.")
+    parser.add_argument("--interval-max", type=float, help="Random sleep upper bound, in seconds.")
     parser.add_argument("--page-size", type=int, default=20)
     parser.add_argument("--once", action="store_true", help="Run one search and exit.")
     parser.add_argument("--open", action="store_true", help="Open the first matching task in the browser.")
@@ -373,16 +416,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-name", help="Only match tasks containing this batch name.")
     parser.add_argument("--batch-suffix", help="Only match active batch names ending with this suffix.")
     parser.add_argument("--save", default="last_found_task.json", help="Where to save the found task JSON. Use empty string to disable.")
+    parser.add_argument("--log-file", help="Append stdout/stderr to this file.")
+    parser.add_argument("--status-file", help="Continuously write current monitor status as JSON.")
     parser.add_argument("--task-kind", help="Optional x-feather-client-task-kind header for claim.")
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+def validate_intervals(args: argparse.Namespace) -> tuple[float, float]:
     if args.interval < 1.0:
         raise SystemExit("Use --interval >= 1.0.")
+
+    min_interval = args.interval_min if args.interval_min is not None else args.interval
+    max_interval = args.interval_max if args.interval_max is not None else min_interval
+    if min_interval < 1.0:
+        raise SystemExit("Use --interval-min >= 1.0.")
+    if max_interval < min_interval:
+        raise SystemExit("Use --interval-max >= --interval-min.")
+    return min_interval, max_interval
+
+
+def next_sleep(min_interval: float, max_interval: float) -> float:
+    if min_interval == max_interval:
+        return min_interval
+    return random.uniform(min_interval, max_interval)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    setup_log_file(args.log_file)
+    min_interval, max_interval = validate_intervals(args)
     if args.page_size < 1:
         raise SystemExit("Use --page-size >= 1.")
+
+    write_status(
+        args.status_file,
+        state="starting",
+        campaign_id=args.campaign_id,
+        claim=args.claim,
+        batch_suffix=args.batch_suffix,
+    )
 
     curl_text = read_curl_text(args.curl_file)
     cookie, payload = request_parts_from_curl(curl_text, args.campaign_id, args.page_size)
@@ -390,6 +462,14 @@ def main(argv: list[str] | None = None) -> int:
     search_headers = build_headers(cookie, args.campaign_id, campaign_url)
 
     allowed_batch_refs = batch_refs_for_suffix(search_headers, args.campaign_id, args.batch_suffix)
+    write_status(
+        args.status_file,
+        state="running",
+        campaign_id=args.campaign_id,
+        claim=args.claim,
+        batch_suffix=args.batch_suffix,
+        active_batch_matches=len(allowed_batch_refs),
+    )
     if args.batch_suffix:
         print(f"batch_suffix={args.batch_suffix} active_matches={len(allowed_batch_refs)}", flush=True)
         for ref in allowed_batch_refs:
@@ -401,6 +481,16 @@ def main(argv: list[str] | None = None) -> int:
         data = poll_once(search_headers, payload)
         tasks = data.get("tasks", [])
         print(f"[{now}] tasks={len(tasks)}", flush=True)
+        write_status(
+            args.status_file,
+            state="polling",
+            campaign_id=args.campaign_id,
+            claim=args.claim,
+            batch_suffix=args.batch_suffix,
+            active_batch_matches=len(allowed_batch_refs),
+            unclaimed_count=len(tasks),
+            last_poll=now,
+        )
 
         for task in tasks:
             if not task_matches_filters(task, args.batch_id, args.batch_name, args.batch_suffix, allowed_batch_refs):
@@ -416,6 +506,15 @@ def main(argv: list[str] | None = None) -> int:
             summary = batch_summary(task)
             if summary:
                 print("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
+            write_status(
+                args.status_file,
+                state="found",
+                campaign_id=args.campaign_id,
+                claim=args.claim,
+                task_id=task_id,
+                title=title,
+                batch=summary,
+            )
 
             save_path = args.save or None
             save_found(save_path, task, data)
@@ -439,7 +538,24 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if not claim_succeeded:
                     print(f"CLAIM_FAILED_CONTINUING {task_id}", flush=True)
+                    write_status(
+                        args.status_file,
+                        state="claim_failed_continuing",
+                        campaign_id=args.campaign_id,
+                        task_id=task_id,
+                        title=title,
+                        batch=summary,
+                    )
                     continue
+                write_status(
+                    args.status_file,
+                    state="claimed",
+                    campaign_id=args.campaign_id,
+                    task_id=task_id,
+                    title=title,
+                    batch=summary,
+                    saved=save_path,
+                )
 
             print("\a", end="", flush=True)
             if args.open:
@@ -448,7 +564,20 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.once:
             return 0
-        time.sleep(args.interval)
+        delay = next_sleep(min_interval, max_interval)
+        print(f"SLEEP {delay:.2f}s", flush=True)
+        write_status(
+            args.status_file,
+            state="sleeping",
+            campaign_id=args.campaign_id,
+            claim=args.claim,
+            batch_suffix=args.batch_suffix,
+            active_batch_matches=len(allowed_batch_refs),
+            unclaimed_count=len(tasks),
+            next_sleep_seconds=round(delay, 2),
+            last_poll=now,
+        )
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

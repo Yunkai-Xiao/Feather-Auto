@@ -63,16 +63,44 @@ If a claim attempt loses the race, for example Feather returns `NOT_FOUND`, the
 CLI logs `CLAIM_FAILED_CONTINUING` and keeps polling. It stops only after a
 successful claim or an unrecoverable error such as expired/invalid auth.
 
+Use a random polling interval:
+
+```powershell
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt
+```
+
 To keep a live log file:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt *> feather-auto.log
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
 ```
 
 Watch it in another PowerShell window:
 
 ```powershell
 Get-Content .\feather-auto.log -Wait -Tail 80
+```
+
+## Dashboard
+
+The repo includes a small static dashboard at `dashboard.html`. It expects these
+default files:
+
+```text
+outputs/raw_creation_claim_monitor.log
+outputs/raw_creation_claim_status.json
+```
+
+Start a local static server from the repo root:
+
+```powershell
+python -m http.server 8765 --bind 127.0.0.1
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765/dashboard.html
 ```
 
 Run one check and exit:
