@@ -9,8 +9,9 @@ import subprocess
 import sys
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -19,6 +20,8 @@ BASE_URL = "https://feather.openai.com"
 SEARCH_URL = f"{BASE_URL}/api/v2/tasks/search"
 WHOAMI_URL = f"{BASE_URL}/api/v2/users/whoami"
 CLIENT_GIT_HASH = "befa13b162c"
+Emit = Callable[..., None]
+StatusCallback = Callable[[dict[str, Any]], None]
 
 UPDATE_TASK_STATUS_QUERY = """
 mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersionIds: [UUID!]) {
@@ -43,6 +46,25 @@ mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersion
   }
 }
 """.strip()
+
+
+@dataclass
+class MonitorConfig:
+    campaign_id: str
+    curl_file: str | None = None
+    interval: float = 1.0
+    interval_min: float | None = None
+    interval_max: float | None = None
+    page_size: int = 20
+    once: bool = False
+    open_task: bool = False
+    claim: bool = False
+    batch_id: str | None = None
+    batch_name: str | None = None
+    batch_suffix: str | None = None
+    save: str | None = "last_found_task.json"
+    status_file: str | None = None
+    task_kind: str | None = None
 
 
 class Tee:
@@ -70,16 +92,19 @@ def setup_log_file(path: str | None) -> None:
     sys.stderr = Tee(sys.stderr, handle)
 
 
-def write_status(path: str | None, **status: Any) -> None:
-    if not path:
-        return
-    status_path = Path(path)
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def status_payload(**status: Any) -> dict[str, Any]:
+    return {
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "pid": os.getpid(),
         **status,
     }
+
+
+def write_status_payload(path: str | None, payload: dict[str, Any]) -> None:
+    if not path:
+        return
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     last_error: OSError | None = None
     for attempt in range(6):
@@ -104,6 +129,10 @@ def write_status(path: str | None, **status: Any) -> None:
 
     if last_error:
         print(f"STATUS_WRITE_FAILED {last_error}", file=sys.stderr, flush=True)
+
+
+def write_status(path: str | None, **status: Any) -> None:
+    write_status_payload(path, status_payload(**status))
 
 
 def read_clipboard() -> str:
@@ -379,13 +408,14 @@ def print_claim_result(
     campaign_id: str,
     page_size: int,
     task_id: str,
+    emit: Emit = print,
 ) -> bool:
     response = claim_task(claim_headers, task_id)
-    print(f"CLAIM status={response.status_code}", flush=True)
+    emit(f"CLAIM status={response.status_code}", flush=True)
     claim_succeeded = False
     try:
         body = response.json()
-        print(json.dumps(body, ensure_ascii=False, indent=2)[:2000], flush=True)
+        emit(json.dumps(body, ensure_ascii=False, indent=2)[:2000], flush=True)
         first = body[0] if isinstance(body, list) and body else {}
         update = first.get("data", {}).get("updateTaskStatus") if isinstance(first, dict) else None
         claim_succeeded = (
@@ -396,12 +426,12 @@ def print_claim_result(
             and not first.get("errors")
         )
     except ValueError:
-        print(response.text[:2000], flush=True)
+        emit(response.text[:2000], flush=True)
 
     user = current_user(search_headers)
     verified_task = verify_task_assignment(search_headers, campaign_id, page_size, task_id)
     if not verified_task:
-        print("VERIFY task_not_found_after_claim", flush=True)
+        emit("VERIFY task_not_found_after_claim", flush=True)
         return claim_succeeded
 
     verification = {
@@ -413,7 +443,7 @@ def print_claim_result(
         "active_user_email": verified_task.get("active_user_email"),
         "workflow_status": verified_task.get("workflow_status"),
     }
-    print("VERIFY " + json.dumps(verification, ensure_ascii=False), flush=True)
+    emit("VERIFY " + json.dumps(verification, ensure_ascii=False), flush=True)
     if user.get("id") and (
         verified_task.get("claimed_by_user_id") == user.get("id")
         or verified_task.get("active_user_id") == user.get("id")
@@ -443,17 +473,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def validate_intervals(args: argparse.Namespace) -> tuple[float, float]:
-    if args.interval < 1.0:
+def validate_interval_values(interval: float, interval_min: float | None, interval_max: float | None) -> tuple[float, float]:
+    if interval < 1.0:
         raise SystemExit("Use --interval >= 1.0.")
 
-    min_interval = args.interval_min if args.interval_min is not None else args.interval
-    max_interval = args.interval_max if args.interval_max is not None else min_interval
+    min_interval = interval_min if interval_min is not None else interval
+    max_interval = interval_max if interval_max is not None else min_interval
     if min_interval < 1.0:
         raise SystemExit("Use --interval-min >= 1.0.")
     if max_interval < min_interval:
         raise SystemExit("Use --interval-max >= --interval-min.")
     return min_interval, max_interval
+
+
+def validate_intervals(args: argparse.Namespace) -> tuple[float, float]:
+    return validate_interval_values(args.interval, args.interval_min, args.interval_max)
 
 
 def next_sleep(min_interval: float, max_interval: float) -> float:
@@ -462,59 +496,86 @@ def next_sleep(min_interval: float, max_interval: float) -> float:
     return random.uniform(min_interval, max_interval)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    setup_log_file(args.log_file)
-    min_interval, max_interval = validate_intervals(args)
-    if args.page_size < 1:
+def run_monitor(
+    config: MonitorConfig,
+    stop_event: Any | None = None,
+    emit: Emit = print,
+    status_callback: StatusCallback | None = None,
+) -> int:
+    min_interval, max_interval = validate_interval_values(config.interval, config.interval_min, config.interval_max)
+    if config.page_size < 1:
         raise SystemExit("Use --page-size >= 1.")
 
-    write_status(
-        args.status_file,
+    def stop_requested() -> bool:
+        return bool(stop_event is not None and stop_event.is_set())
+
+    def update_status(**status: Any) -> None:
+        payload = status_payload(**status)
+        write_status_payload(config.status_file, payload)
+        if status_callback:
+            status_callback(payload)
+
+    update_status(
         state="starting",
-        campaign_id=args.campaign_id,
-        claim=args.claim,
-        batch_suffix=args.batch_suffix,
+        campaign_id=config.campaign_id,
+        claim=config.claim,
+        batch_suffix=config.batch_suffix,
     )
 
-    curl_text = read_curl_text(args.curl_file)
-    cookie, payload = request_parts_from_curl(curl_text, args.campaign_id, args.page_size)
-    campaign_url = f"{BASE_URL}/campaigns/{args.campaign_id}?tab=tasks&tasks-tab=unclaimed"
-    search_headers = build_headers(cookie, args.campaign_id, campaign_url)
+    if stop_requested():
+        update_status(state="stopped", campaign_id=config.campaign_id, claim=config.claim, batch_suffix=config.batch_suffix)
+        return 0
 
-    allowed_batch_refs = batch_refs_for_suffix(search_headers, args.campaign_id, args.batch_suffix)
-    write_status(
-        args.status_file,
+    curl_text = read_curl_text(config.curl_file)
+    cookie, payload = request_parts_from_curl(curl_text, config.campaign_id, config.page_size)
+    campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
+    search_headers = build_headers(cookie, config.campaign_id, campaign_url)
+
+    allowed_batch_refs = batch_refs_for_suffix(search_headers, config.campaign_id, config.batch_suffix)
+    update_status(
         state="running",
-        campaign_id=args.campaign_id,
-        claim=args.claim,
-        batch_suffix=args.batch_suffix,
+        campaign_id=config.campaign_id,
+        claim=config.claim,
+        batch_suffix=config.batch_suffix,
         active_batch_matches=len(allowed_batch_refs),
     )
-    if args.batch_suffix:
-        print(f"batch_suffix={args.batch_suffix} active_matches={len(allowed_batch_refs)}", flush=True)
+    if config.batch_suffix:
+        emit(f"batch_suffix={config.batch_suffix} active_matches={len(allowed_batch_refs)}", flush=True)
         for ref in allowed_batch_refs:
-            print(f"BATCH_REF {ref.get('id')} {ref.get('name')}", flush=True)
+            emit(f"BATCH_REF {ref.get('id')} {ref.get('name')}", flush=True)
 
     seen: set[str] = set()
     while True:
+        if stop_requested():
+            emit("STOPPED", flush=True)
+            update_status(
+                state="stopped",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                batch_suffix=config.batch_suffix,
+                active_batch_matches=len(allowed_batch_refs),
+            )
+            return 0
+
         now = time.strftime("%H:%M:%S")
         data = poll_once(search_headers, payload)
         tasks = data.get("tasks", [])
-        print(f"[{now}] tasks={len(tasks)}", flush=True)
-        write_status(
-            args.status_file,
+        emit(f"[{now}] tasks={len(tasks)}", flush=True)
+        update_status(
             state="polling",
-            campaign_id=args.campaign_id,
-            claim=args.claim,
-            batch_suffix=args.batch_suffix,
+            campaign_id=config.campaign_id,
+            claim=config.claim,
+            batch_suffix=config.batch_suffix,
             active_batch_matches=len(allowed_batch_refs),
             unclaimed_count=len(tasks),
             last_poll=now,
         )
 
         for task in tasks:
-            if not task_matches_filters(task, args.batch_id, args.batch_name, args.batch_suffix, allowed_batch_refs):
+            if stop_requested():
+                break
+
+            if not task_matches_filters(task, config.batch_id, config.batch_name, config.batch_suffix, allowed_batch_refs):
                 continue
 
             task_id = task.get("id")
@@ -523,83 +584,131 @@ def main(argv: list[str] | None = None) -> int:
 
             seen.add(task_id)
             title = task.get("title") or task.get("description") or "(untitled)"
-            print(f"FOUND {task_id}: {title}", flush=True)
+            emit(f"FOUND {task_id}: {title}", flush=True)
             summary = batch_summary(task)
             if summary:
-                print("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
-            write_status(
-                args.status_file,
+                emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
+            update_status(
                 state="found",
-                campaign_id=args.campaign_id,
-                claim=args.claim,
+                campaign_id=config.campaign_id,
+                claim=config.claim,
                 task_id=task_id,
                 title=title,
                 batch=summary,
             )
 
-            save_path = args.save or None
+            save_path = config.save or None
             save_found(save_path, task, data)
             if save_path:
-                print(f"SAVED {save_path}", flush=True)
+                emit(f"SAVED {save_path}", flush=True)
 
-            if args.claim:
+            if config.claim:
                 claim_headers = build_headers(
                     cookie,
-                    args.campaign_id,
+                    config.campaign_id,
                     task_url(task_id),
                     task_id=task_id,
-                    task_kind=args.task_kind or task.get("kind"),
+                    task_kind=config.task_kind or task.get("kind"),
                 )
                 claim_succeeded = print_claim_result(
                     claim_headers,
                     search_headers,
-                    args.campaign_id,
-                    args.page_size,
+                    config.campaign_id,
+                    config.page_size,
                     task_id,
+                    emit=emit,
                 )
                 if not claim_succeeded:
-                    print(f"CLAIM_FAILED_CONTINUING {task_id}", flush=True)
-                    write_status(
-                        args.status_file,
+                    emit(f"CLAIM_FAILED_CONTINUING {task_id}", flush=True)
+                    update_status(
                         state="claim_failed_continuing",
-                        campaign_id=args.campaign_id,
+                        campaign_id=config.campaign_id,
                         task_id=task_id,
                         title=title,
                         batch=summary,
                     )
                     continue
-                write_status(
-                    args.status_file,
+                update_status(
                     state="claimed",
-                    campaign_id=args.campaign_id,
+                    campaign_id=config.campaign_id,
                     task_id=task_id,
                     title=title,
                     batch=summary,
                     saved=save_path,
                 )
-                print(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
+                emit(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
 
-            print("\a", end="", flush=True)
-            if args.open:
+            emit("\a", end="", flush=True)
+            if config.open_task:
                 webbrowser.open(task_url(task_id))
             return 0
 
-        if args.once:
+        if stop_requested():
+            emit("STOPPED", flush=True)
+            update_status(
+                state="stopped",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                batch_suffix=config.batch_suffix,
+                active_batch_matches=len(allowed_batch_refs),
+            )
+            return 0
+
+        if config.once:
             return 0
         delay = next_sleep(min_interval, max_interval)
-        print(f"SLEEP {delay:.2f}s", flush=True)
-        write_status(
-            args.status_file,
+        emit(f"SLEEP {delay:.2f}s", flush=True)
+        update_status(
             state="sleeping",
-            campaign_id=args.campaign_id,
-            claim=args.claim,
-            batch_suffix=args.batch_suffix,
+            campaign_id=config.campaign_id,
+            claim=config.claim,
+            batch_suffix=config.batch_suffix,
             active_batch_matches=len(allowed_batch_refs),
             unclaimed_count=len(tasks),
             next_sleep_seconds=round(delay, 2),
             last_poll=now,
         )
-        time.sleep(delay)
+        if stop_event is not None:
+            if stop_event.wait(delay):
+                emit("STOPPED", flush=True)
+                update_status(
+                    state="stopped",
+                    campaign_id=config.campaign_id,
+                    claim=config.claim,
+                    batch_suffix=config.batch_suffix,
+                    active_batch_matches=len(allowed_batch_refs),
+                    unclaimed_count=len(tasks),
+                    last_poll=now,
+                )
+                return 0
+        else:
+            time.sleep(delay)
+
+
+def config_from_args(args: argparse.Namespace) -> MonitorConfig:
+    return MonitorConfig(
+        campaign_id=args.campaign_id,
+        curl_file=args.curl_file,
+        interval=args.interval,
+        interval_min=args.interval_min,
+        interval_max=args.interval_max,
+        page_size=args.page_size,
+        once=args.once,
+        open_task=args.open,
+        claim=args.claim,
+        batch_id=args.batch_id,
+        batch_name=args.batch_name,
+        batch_suffix=args.batch_suffix,
+        save=args.save or None,
+        status_file=args.status_file,
+        task_kind=args.task_kind,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    setup_log_file(args.log_file)
+    return run_monitor(config_from_args(args))
 
 
 if __name__ == "__main__":

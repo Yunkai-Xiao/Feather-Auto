@@ -247,7 +247,7 @@
 
       <section class="grid">
         <div class="panel">
-          <div class="label">Process</div>
+          <div class="label">Worker</div>
           <div class="value status"><span class="dot" id="dot"></span><span id="running">unknown</span></div>
         </div>
         <div class="panel">
@@ -349,7 +349,7 @@
         const status = latest.status || {};
         const running = latest.running;
         const state = running ? status.state || "running" : "stopped";
-        $("running").textContent = running ? `running (${latest.pid})` : "stopped";
+        $("running").textContent = running ? `running (${latest.worker_id || "worker"})` : "stopped";
         $("state").textContent = state;
         $("unclaimed").textContent = status.unclaimed_count ?? "-";
         $("sleep").textContent = status.next_sleep_seconds == null ? "-" : `${status.next_sleep_seconds}s`;
@@ -390,14 +390,14 @@
           body: JSON.stringify(configFromForm()),
         });
         $("curlText").value = "";
-        setMessage(`Started PID ${result.pid}`);
+        setMessage(`Started worker ${result.worker_id || ""}`.trim());
         await refresh();
       }
 
       async function stop() {
         setMessage("Stopping...");
         const result = await api("/api/stop", { method: "POST", body: "{}" });
-        setMessage(result.stopped ? "Stopped." : "No running monitor.");
+        setMessage(result.stopped ? "Stop requested." : "No running monitor.");
         await refresh();
       }
 

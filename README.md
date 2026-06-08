@@ -107,9 +107,13 @@ http://127.0.0.1:8765/dashboard.html
 The dashboard can:
 
 - Save a pasted Feather cURL locally.
-- Start or stop the monitor process.
+- Start or stop the in-process monitor worker.
 - Configure campaign id, batch suffix, random interval min/max, claim mode, and open-on-success.
 - Show current status JSON and live log tail.
+
+The dashboard no longer starts a separate CLI subprocess for monitoring. The
+server owns a background worker thread and stops it with an in-memory stop
+event, so it does not depend on a stale `raw_creation_claim_monitor.pid` file.
 
 Run one check and exit:
 

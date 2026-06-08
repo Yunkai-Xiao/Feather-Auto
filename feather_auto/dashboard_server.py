@@ -3,23 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
-import subprocess
-import sys
+import threading
+import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from .cli import MonitorConfig, run_monitor
+
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS = ROOT / "outputs"
-PID_FILE = OUTPUTS / "raw_creation_claim_monitor.pid"
 CURL_FILE = OUTPUTS / "current_feather_request.curl.txt"
 LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
-STDOUT_FILE = OUTPUTS / "raw_creation_claim_monitor.stdout.log"
-STDERR_FILE = OUTPUTS / "raw_creation_claim_monitor.err.log"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
 
@@ -48,45 +46,6 @@ def read_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
-def pid_from_pid_file() -> int | None:
-    pid_text = read_text(PID_FILE).strip()
-    if not pid_text.isdigit():
-        return None
-    pid = int(pid_text)
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        try:
-            PID_FILE.unlink()
-        except FileNotFoundError:
-            pass
-        return None
-    return pid
-
-
-def monitor_running() -> bool:
-    return pid_from_pid_file() is not None
-
-
-def stop_monitor() -> bool:
-    pid = pid_from_pid_file()
-    if pid is None:
-        try:
-            PID_FILE.unlink()
-        except FileNotFoundError:
-            pass
-        return False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return False
-    try:
-        PID_FILE.unlink()
-    except FileNotFoundError:
-        pass
-    return True
-
-
 def tail(path: Path, max_lines: int = 260) -> str:
     text = read_text(path)
     if not text:
@@ -94,110 +53,167 @@ def tail(path: Path, max_lines: int = 260) -> str:
     return "\n".join(text.splitlines()[-max_lines:])
 
 
-def dashboard_state() -> dict[str, Any]:
-    status_text = read_text(STATUS_FILE)
-    status: dict[str, Any] = {}
-    if status_text:
-        try:
-            status = json.loads(status_text)
-        except json.JSONDecodeError:
-            status = {"state": "status_parse_error"}
-
-    pid = pid_from_pid_file()
-    running = pid is not None
-    if not running and status.get("state") in {"starting", "running", "polling", "sleeping", "found"}:
-        status = {**status, "state": "stopped"}
-
-    return {
-        "running": running,
-        "pid": pid,
-        "curl_saved": CURL_FILE.exists(),
-        "status": status,
-        "log_tail": tail(LOG_FILE),
-        "stderr_tail": tail(STDERR_FILE, 80),
-        "paths": {
-            "curl": str(CURL_FILE),
-            "log": str(LOG_FILE),
-            "status": str(STATUS_FILE),
-            "save": str(SAVE_FILE),
-        },
-    }
-
-
 def clean_runtime_files() -> None:
-    for path in [LOG_FILE, STATUS_FILE, STDOUT_FILE, STDERR_FILE]:
+    for path in [LOG_FILE, STATUS_FILE]:
         try:
             path.unlink()
         except FileNotFoundError:
             pass
 
 
+class MonitorController:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._log_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._status: dict[str, Any] = {}
+        self._last_error = ""
+
+    def _running_unlocked(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def _emit(self, *values: Any, sep: str = " ", end: str = "\n", flush: bool = True) -> None:
+        del flush
+        text = sep.join(str(value) for value in values) + end
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with self._log_lock:
+            with LOG_FILE.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+
+    def _update_status(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self._status = dict(payload)
+
+    def _run(self, config: MonitorConfig, stop_event: threading.Event) -> None:
+        try:
+            run_monitor(
+                config,
+                stop_event=stop_event,
+                emit=self._emit,
+                status_callback=self._update_status,
+            )
+            with self._lock:
+                state = self._status.get("state")
+                if state not in {"claimed", "stopped", "error"}:
+                    self._status = {**self._status, "state": "finished"}
+        except Exception as exc:
+            self._last_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            self._emit("ERROR " + self._last_error)
+            with self._lock:
+                self._status = {**self._status, "state": "error", "error": self._last_error}
+
+    def start(self, config: dict[str, Any]) -> dict[str, Any]:
+        OUTPUTS.mkdir(parents=True, exist_ok=True)
+        curl_text = str(config.get("curlText") or "").strip()
+        if curl_text:
+            CURL_FILE.write_text(curl_text, encoding="utf-8")
+        if not CURL_FILE.exists():
+            raise ValueError("Paste a Feather Copy-as-cURL before starting.")
+
+        campaign_id = str(config.get("campaignId") or "929712fc-fa2a-45bc-94df-2ae6d445b2ca").strip()
+        batch_suffix = str(config.get("batchSuffix") or "-raw-creation").strip()
+        interval_min = float(config.get("intervalMin") or 1.2)
+        interval_max = float(config.get("intervalMax") or 3.8)
+        if interval_min < 1:
+            raise ValueError("Interval min must be >= 1 second.")
+        if interval_max < interval_min:
+            raise ValueError("Interval max must be >= interval min.")
+
+        monitor_config = MonitorConfig(
+            campaign_id=campaign_id,
+            curl_file=str(CURL_FILE),
+            interval_min=interval_min,
+            interval_max=interval_max,
+            batch_suffix=batch_suffix,
+            save=str(SAVE_FILE),
+            status_file=str(STATUS_FILE),
+            claim=bool(config.get("claim", True)),
+            open_task=bool(config.get("openTask", True)),
+        )
+
+        with self._lock:
+            existing = self._thread if self._running_unlocked() else None
+            if existing:
+                self._stop_event.set()
+                self._status = {**self._status, "state": "stopping"}
+
+        if existing:
+            existing.join(timeout=5)
+            with self._lock:
+                if existing.is_alive():
+                    raise RuntimeError("Existing monitor is still stopping. Try again in a few seconds.")
+
+        clean_runtime_files()
+
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=self._run,
+            args=(monitor_config, stop_event),
+            name="FeatherMonitorWorker",
+            daemon=True,
+        )
+        with self._lock:
+            self._stop_event = stop_event
+            self._thread = thread
+            self._last_error = ""
+            self._status = {
+                "state": "starting",
+                "campaign_id": campaign_id,
+                "claim": monitor_config.claim,
+                "batch_suffix": batch_suffix,
+            }
+        thread.start()
+        return {"started": True, "worker_id": thread.ident}
+
+    def stop(self) -> bool:
+        with self._lock:
+            if not self._running_unlocked():
+                return False
+            self._stop_event.set()
+            self._status = {**self._status, "state": "stopping"}
+            return True
+
+    def state(self) -> dict[str, Any]:
+        with self._lock:
+            running = self._running_unlocked()
+            worker_id = self._thread.ident if self._thread else None
+            status = dict(self._status)
+            last_error = self._last_error
+            if not running and status.get("state") in {"starting", "running", "polling", "sleeping", "found", "stopping"}:
+                status = {**status, "state": "stopped"}
+
+        return {
+            "running": running,
+            "pid": None,
+            "server_pid": os.getpid(),
+            "worker_id": worker_id if running else None,
+            "curl_saved": CURL_FILE.exists(),
+            "status": status,
+            "log_tail": tail(LOG_FILE),
+            "stderr_tail": last_error,
+            "paths": {
+                "curl": str(CURL_FILE),
+                "log": str(LOG_FILE),
+                "status": str(STATUS_FILE),
+                "save": str(SAVE_FILE),
+            },
+        }
+
+
+MONITOR = MonitorController()
+
+
 def start_monitor(config: dict[str, Any]) -> dict[str, Any]:
-    OUTPUTS.mkdir(parents=True, exist_ok=True)
-    curl_text = str(config.get("curlText") or "").strip()
-    if curl_text:
-        CURL_FILE.write_text(curl_text, encoding="utf-8")
-    if not CURL_FILE.exists():
-        raise ValueError("Paste a Feather Copy-as-cURL before starting.")
+    return MONITOR.start(config)
 
-    if monitor_running():
-        stop_monitor()
 
-    clean_runtime_files()
+def stop_monitor() -> bool:
+    return MONITOR.stop()
 
-    campaign_id = str(config.get("campaignId") or "929712fc-fa2a-45bc-94df-2ae6d445b2ca").strip()
-    batch_suffix = str(config.get("batchSuffix") or "-raw-creation").strip()
-    interval_min_value = float(config.get("intervalMin") or 1.2)
-    interval_max_value = float(config.get("intervalMax") or 3.8)
-    if interval_min_value < 1:
-        raise ValueError("Interval min must be >= 1 second.")
-    if interval_max_value < interval_min_value:
-        raise ValueError("Interval max must be >= interval min.")
-    interval_min = str(interval_min_value)
-    interval_max = str(interval_max_value)
-    claim = bool(config.get("claim", True))
-    open_task = bool(config.get("openTask", True))
 
-    args = [
-        sys.executable,
-        "-u",
-        "-m",
-        "feather_auto.cli",
-        "--campaign-id",
-        campaign_id,
-        "--interval-min",
-        interval_min,
-        "--interval-max",
-        interval_max,
-        "--batch-suffix",
-        batch_suffix,
-        "--curl-file",
-        str(CURL_FILE),
-        "--save",
-        str(SAVE_FILE),
-        "--log-file",
-        str(LOG_FILE),
-        "--status-file",
-        str(STATUS_FILE),
-    ]
-    if claim:
-        args.append("--claim")
-    if open_task:
-        args.append("--open")
-
-    stdout = STDOUT_FILE.open("a", encoding="utf-8")
-    stderr = STDERR_FILE.open("a", encoding="utf-8")
-    proc = subprocess.Popen(
-        args,
-        cwd=str(ROOT),
-        stdout=stdout,
-        stderr=stderr,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    stdout.close()
-    stderr.close()
-    PID_FILE.write_text(str(proc.pid), encoding="ascii")
-    return {"started": True, "pid": proc.pid, "args": args[3:]}
+def dashboard_state() -> dict[str, Any]:
+    return MONITOR.state()
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
