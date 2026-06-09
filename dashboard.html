@@ -6,9 +6,25 @@
     <title>Feather Auto Monitor</title>
     <style>
       :root {
+        --bg: #f6f8fb;
+        --surface: #ffffff;
+        --surface-subtle: #f1f5f4;
+        --ink: #171f2a;
+        --muted: #697384;
+        --border: #d9e0e8;
+        --border-strong: #bac4d1;
+        --accent: #0f766e;
+        --accent-strong: #115e59;
+        --success: #15803d;
+        --warning: #b45309;
+        --danger: #b91c1c;
+        --danger-strong: #991b1b;
+        --code-bg: #111827;
+        --code-ink: #e5e7eb;
+        --radius: 6px;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #101624;
-        color: #e5e7eb;
+        color: var(--ink);
+        background: var(--bg);
       }
 
       * {
@@ -16,179 +32,351 @@
       }
 
       body {
-        margin: 0;
         min-height: 100vh;
-        background: #101624;
+        margin: 0;
+        background: var(--bg);
       }
 
-      main {
-        max-width: 1240px;
-        margin: 0 auto;
-        padding: 22px;
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
       }
 
-      header {
+      .app {
+        min-height: 100vh;
         display: flex;
-        justify-content: space-between;
+        flex-direction: column;
+      }
+
+      .topbar {
+        min-height: 64px;
+        display: grid;
+        grid-template-columns: minmax(260px, 1fr) auto auto;
         align-items: center;
         gap: 16px;
-        margin-bottom: 16px;
+        padding: 12px 20px;
+        color: #f9fafb;
+        background: #20242b;
+        border-bottom: 1px solid #313741;
       }
 
       h1 {
         margin: 0;
-        font-size: 22px;
-        font-weight: 680;
+        font-size: 18px;
+        line-height: 1.2;
+        font-weight: 700;
       }
 
-      .meta {
+      .pathline {
         margin-top: 4px;
-        color: #9ca3af;
-        font-size: 13px;
+        max-width: 920px;
+        overflow: hidden;
+        color: #aab3c1;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .top-actions,
+      .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .shell {
+        width: 100%;
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 16px;
+        display: grid;
+        grid-template-columns: 380px minmax(0, 1fr);
+        gap: 16px;
+      }
+
+      .rail,
+      .main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
       }
 
       .panel {
-        background: #1f2937;
-        border: 1px solid #374151;
-        border-radius: 8px;
-        padding: 14px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
       }
 
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         gap: 12px;
+        min-height: 42px;
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .panel-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .panel-body {
+        padding: 12px;
+      }
+
+      .field {
         margin-bottom: 12px;
       }
 
-      .two {
-        display: grid;
-        grid-template-columns: 420px minmax(0, 1fr);
-        gap: 12px;
-        align-items: start;
+      .field:last-child {
+        margin-bottom: 0;
       }
 
       label,
       .label {
         display: block;
-        margin-bottom: 6px;
-        color: #9ca3af;
-        font-size: 12px;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
         text-transform: uppercase;
-      }
-
-      .value {
-        font-size: 18px;
-        font-weight: 650;
-        word-break: break-word;
-      }
-
-      .status {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: #9ca3af;
-      }
-
-      .dot.running,
-      .dot.monitoring,
-      .dot.polling,
-      .dot.sleeping {
-        background: #22c55e;
-      }
-
-      .dot.found {
-        background: #eab308;
-      }
-
-      .dot.claimed {
-        background: #38bdf8;
-      }
-
-      .dot.claim_failed_continuing {
-        background: #f97316;
       }
 
       input,
       select,
       textarea {
         width: 100%;
-        border: 1px solid #4b5563;
-        border-radius: 6px;
-        background: #111827;
-        color: #f9fafb;
-        padding: 9px 10px;
-        font: inherit;
+        min-height: 36px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: var(--ink);
+        padding: 8px 9px;
+        outline: none;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
       }
 
       textarea {
-        min-height: 170px;
+        min-height: 230px;
         resize: vertical;
         font-family: "Cascadia Code", Consolas, monospace;
         font-size: 12px;
+        line-height: 1.45;
       }
 
       .row {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 10px;
-        margin-bottom: 10px;
       }
 
-      .checkrow {
-        display: flex;
-        gap: 14px;
-        align-items: center;
-        margin: 12px 0;
-      }
-
-      .checkrow label {
-        display: inline-flex;
-        align-items: center;
+      .toggle-list {
+        display: grid;
         gap: 8px;
-        margin: 0;
-        text-transform: none;
-        color: #e5e7eb;
+        margin: 2px 0 12px;
       }
 
-      .checkrow input {
-        width: auto;
+      .switch {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 38px;
+        padding: 7px 9px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-subtle);
+        color: var(--ink);
+      }
+
+      .switch span {
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .switch input {
+        width: 16px;
+        min-height: 16px;
+        accent-color: var(--accent);
       }
 
       button {
-        border: 1px solid #4b5563;
-        border-radius: 6px;
-        background: #374151;
-        color: #f9fafb;
-        padding: 9px 12px;
+        min-height: 36px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: var(--ink);
+        padding: 8px 12px;
+        font-weight: 700;
         cursor: pointer;
       }
 
+      button:hover {
+        border-color: #8c99a8;
+        background: #f8fafc;
+      }
+
       button.primary {
-        border-color: #0284c7;
-        background: #0369a1;
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      button.primary:hover {
+        border-color: var(--accent-strong);
+        background: var(--accent-strong);
       }
 
       button.danger {
-        border-color: #b91c1c;
-        background: #991b1b;
+        border-color: var(--danger);
+        background: var(--danger);
+        color: #ffffff;
+      }
+
+      button.danger:hover {
+        border-color: var(--danger-strong);
+        background: var(--danger-strong);
       }
 
       button:disabled {
-        opacity: 0.55;
+        opacity: 0.48;
         cursor: not-allowed;
       }
 
-      .actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
+      .action-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .action-grid .wide {
+        grid-column: 1 / -1;
+      }
+
+      .message {
+        min-height: 18px;
+        margin-top: 10px;
+        color: var(--warning);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .run-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 7px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #9ca3af;
+      }
+
+      .dot.monitoring,
+      .dot.running {
+        background: var(--success);
+      }
+
+      .dot.found,
+      .dot.claim_failed_continuing {
+        background: var(--warning);
+      }
+
+      .dot.claimed {
+        background: #0284c7;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 0;
+      }
+
+      .metric {
+        min-height: 86px;
+        padding: 12px;
+        border-right: 1px solid var(--border);
+      }
+
+      .metric:last-child {
+        border-right: 0;
+      }
+
+      .metric .label {
+        margin-bottom: 8px;
+      }
+
+      .metric-value {
+        display: block;
+        min-height: 26px;
+        font-size: 20px;
+        line-height: 1.2;
+        font-weight: 760;
+        word-break: break-word;
+      }
+
+      .metric-note {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .task-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 18px;
+      }
+
+      .kv {
+        min-width: 0;
+      }
+
+      .kv .label {
+        margin-bottom: 3px;
+      }
+
+      .kv-value {
+        min-height: 20px;
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 650;
+        word-break: break-word;
+      }
+
+      .kv-value.muted {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .log-panel {
+        min-height: 0;
+      }
+
+      .log-body {
+        padding: 0;
       }
 
       pre {
@@ -202,124 +390,207 @@
 
       .log {
         min-height: 520px;
-        max-height: calc(100vh - 280px);
+        max-height: calc(100vh - 315px);
         overflow: auto;
-        background: #030712;
+        border-radius: 0 0 var(--radius) var(--radius);
+        background: var(--code-bg);
+        color: var(--code-ink);
+        padding: 12px;
       }
 
-      .message {
-        min-height: 20px;
-        color: #fbbf24;
-        font-size: 13px;
-        margin-top: 10px;
+      .small {
+        color: var(--muted);
+        font-size: 12px;
       }
 
-      @media (max-width: 920px) {
-        main {
-          padding: 14px;
+      @media (max-width: 1100px) {
+        .topbar {
+          grid-template-columns: 1fr;
         }
 
-        header,
-        .two {
-          display: block;
+        .shell {
+          grid-template-columns: 1fr;
         }
 
-        .grid {
+        .metric-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
-        .panel {
-          margin-bottom: 12px;
+        .metric {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .metric:last-child {
+          border-bottom: 0;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .shell {
+          padding: 10px;
+        }
+
+        .topbar {
+          padding: 12px;
+        }
+
+        .row,
+        .task-grid,
+        .metric-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .action-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .action-grid .wide {
+          grid-column: auto;
         }
       }
     </style>
   </head>
   <body>
-    <main>
-      <header>
+    <div class="app">
+      <header class="topbar">
         <div>
           <h1>Feather Auto Monitor</h1>
-          <div class="meta" id="paths">Loading paths...</div>
+          <div class="pathline" id="paths">Loading paths...</div>
         </div>
-        <div class="actions">
+        <div class="run-pill"><span class="dot" id="dot"></span><span id="running">stopped</span></div>
+        <div class="top-actions">
           <button id="refresh">Refresh</button>
           <button id="stop" class="danger">Stop</button>
         </div>
       </header>
 
-      <section class="grid">
-        <div class="panel">
-          <div class="label">Worker</div>
-          <div class="value status"><span class="dot" id="dot"></span><span id="running">unknown</span></div>
-        </div>
-        <div class="panel">
-          <div class="label">State</div>
-          <div class="value" id="state">-</div>
-        </div>
-        <div class="panel">
-          <div class="label">Unclaimed</div>
-          <div class="value" id="unclaimed">-</div>
-        </div>
-        <div class="panel">
-          <div class="label">Next Poll</div>
-          <div class="value" id="sleep">-</div>
-        </div>
-      </section>
-
-      <section class="two">
-        <div class="panel">
-          <label for="curlText">Feather cURL</label>
-          <textarea id="curlText" placeholder="Paste Copy-as-cURL here. It is saved only in outputs/current_feather_request.curl.txt."></textarea>
-
-          <div class="row" style="margin-top: 12px">
-            <div>
-              <label for="campaignId">Campaign</label>
-              <select id="campaignId">
-                <option value="929712fc-fa2a-45bc-94df-2ae6d445b2ca">Raw creation campaign</option>
-              </select>
-            </div>
-            <div>
-              <label for="batchSuffix">Batch Suffix</label>
-              <input id="batchSuffix" value="-raw-creation" />
-            </div>
-          </div>
-
-          <div class="row">
-            <div>
-              <label for="intervalMin">Interval Min</label>
-              <input id="intervalMin" type="number" min="1" step="0.1" value="1.2" />
-            </div>
-            <div>
-              <label for="intervalMax">Interval Max</label>
-              <input id="intervalMax" type="number" min="1" step="0.1" value="3.8" />
-            </div>
-          </div>
-
-          <div class="checkrow">
-            <label><input id="claim" type="checkbox" checked /> Claim</label>
-            <label><input id="openTask" type="checkbox" checked /> Open task on success</label>
-          </div>
-
-          <div class="actions">
-            <button id="saveCurl">Save cURL</button>
-            <button id="start" class="primary">Start / Restart</button>
-            <button id="stop2" class="danger">Stop</button>
-          </div>
-          <div class="message" id="message"></div>
-        </div>
-
-        <div>
+      <div class="shell">
+        <aside class="rail">
           <section class="panel">
-            <div class="label">Current Task</div>
-            <pre id="task">-</pre>
+            <div class="panel-header">
+              <h2 class="panel-title">Monitor</h2>
+              <span class="small" id="server">-</span>
+            </div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="campaignId">Campaign</label>
+                <select id="campaignId">
+                  <option value="929712fc-fa2a-45bc-94df-2ae6d445b2ca">Raw creation campaign</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="batchSuffix">Batch suffix</label>
+                <input id="batchSuffix" value="-raw-creation" />
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label for="intervalMin">Interval min</label>
+                  <input id="intervalMin" type="number" min="1" step="0.1" value="1.2" />
+                </div>
+                <div class="field">
+                  <label for="intervalMax">Interval max</label>
+                  <input id="intervalMax" type="number" min="1" step="0.1" value="3.8" />
+                </div>
+              </div>
+
+              <div class="toggle-list">
+                <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
+                <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
+              </div>
+
+              <div class="action-grid">
+                <button id="start" class="primary wide">Start / Restart</button>
+                <button id="saveCurl">Save cURL</button>
+                <button id="stop2" class="danger">Stop</button>
+              </div>
+              <div class="message" id="message"></div>
+            </div>
           </section>
-          <section class="panel log" style="margin-top: 12px">
-            <div class="label">Log</div>
-            <pre id="log">Loading...</pre>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Request cURL</h2>
+              <span class="small" id="curlSaved">-</span>
+            </div>
+            <div class="panel-body">
+              <textarea id="curlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/v2/tasks/search' ..."></textarea>
+            </div>
           </section>
-        </div>
-      </section>
-    </main>
+        </aside>
+
+        <main class="main">
+          <section class="panel">
+            <div class="metric-grid">
+              <div class="metric">
+                <span class="label">State</span>
+                <span class="metric-value" id="state">-</span>
+                <span class="metric-note" id="phase">-</span>
+              </div>
+              <div class="metric">
+                <span class="label">Unclaimed</span>
+                <span class="metric-value" id="unclaimed">-</span>
+                <span class="metric-note" id="lastPoll">-</span>
+              </div>
+              <div class="metric">
+                <span class="label">Next poll</span>
+                <span class="metric-value" id="nextPoll">-</span>
+                <span class="metric-note">random interval</span>
+              </div>
+              <div class="metric">
+                <span class="label">Batch matches</span>
+                <span class="metric-value" id="batchMatches">-</span>
+                <span class="metric-note" id="batchSuffixView">-</span>
+              </div>
+              <div class="metric">
+                <span class="label">Mode</span>
+                <span class="metric-value" id="mode">-</span>
+                <span class="metric-note" id="updated">-</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Current task</h2>
+              <span class="small" id="campaignView">-</span>
+            </div>
+            <div class="panel-body">
+              <div class="task-grid">
+                <div class="kv">
+                  <span class="label">Task id</span>
+                  <div class="kv-value muted" id="taskId">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Title</span>
+                  <div class="kv-value muted" id="taskTitle">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Batch</span>
+                  <div class="kv-value muted" id="taskBatch">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Saved JSON</span>
+                  <div class="kv-value muted" id="taskSaved">-</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel log-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Event log</h2>
+              <span class="small" id="logMeta">-</span>
+            </div>
+            <div class="log-body">
+              <pre class="log" id="log">Loading...</pre>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
 
     <script>
       let latest = null;
@@ -328,6 +599,10 @@
 
       function setMessage(text) {
         $("message").textContent = text || "";
+      }
+
+      function setText(id, value, fallback = "-") {
+        $(id).textContent = value == null || value === "" ? fallback : String(value);
       }
 
       async function api(path, options = {}) {
@@ -367,35 +642,57 @@
         if (nextValue) select.value = nextValue;
       }
 
+      function modeText(status) {
+        const claim = Boolean(status.claim ?? $("claim").checked);
+        const open = $("openTask").checked;
+        if (claim) return "claim";
+        if (open) return "open";
+        return "observe";
+      }
+
+      function batchText(batch) {
+        if (!batch) return "-";
+        return batch.task_batch_name || batch.task_batch_id || JSON.stringify(batch);
+      }
+
+      function cleanLog(text) {
+        return (text || "No log yet.").replace(/\u0007/g, "");
+      }
+
       async function refresh() {
         latest = await api("/api/state");
         const status = latest.status || {};
         const running = latest.running;
-        renderCampaigns(latest.campaigns, status.campaign_id);
         const state = running ? status.state || "running" : "stopped";
-        $("running").textContent = running ? `running (${latest.worker_id || "worker"})` : "stopped";
-        $("state").textContent = state;
-        $("unclaimed").textContent = status.unclaimed_count ?? "-";
-        $("sleep").textContent =
-          status.next_sleep_seconds == null ? (running && status.phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`;
+        const phase = status.phase || "-";
+
+        renderCampaigns(latest.campaigns, status.campaign_id);
+
+        setText("running", running ? `running (${latest.worker_id || "worker"})` : "stopped");
+        setText("state", state);
+        setText("phase", running ? phase : "-");
+        setText("unclaimed", status.unclaimed_count);
+        setText("lastPoll", status.last_poll ? `last poll ${status.last_poll}` : "-");
+        setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
+        setText("batchMatches", status.active_batch_matches);
+        setText("batchSuffixView", status.batch_suffix || $("batchSuffix").value || "-");
+        setText("mode", modeText(status));
+        setText("updated", ageText(status.updated_at));
+        setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
+        setText("curlSaved", latest.curl_saved ? "saved" : "empty");
+        setText("campaignView", status.campaign_name || status.campaign_id || $("campaignId").selectedOptions[0]?.textContent);
+        setText("taskId", status.task_id);
+        setText("taskTitle", status.title);
+        setText("taskBatch", batchText(status.batch));
+        setText("taskSaved", status.saved);
+
         $("dot").className = `dot ${running ? state : ""}`;
-        $("paths").textContent = `${latest.paths.log} | ${latest.paths.status}`;
-        $("task").textContent = JSON.stringify(
-          {
-            updated: ageText(status.updated_at),
-            campaign: status.campaign_name || status.campaign_id,
-            phase: status.phase,
-            task_id: status.task_id,
-            title: status.title,
-            batch: status.batch,
-            saved: status.saved,
-            curl_saved: latest.curl_saved,
-          },
-          null,
-          2,
-        );
-        $("log").textContent = latest.log_tail || "No log yet.";
-        $("log").parentElement.scrollTop = $("log").parentElement.scrollHeight;
+        $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status}` : "";
+        $("logMeta").textContent = latest.paths?.log || "-";
+        $("log").textContent = cleanLog(latest.log_tail);
+        $("log").scrollTop = $("log").scrollHeight;
+        $("stop").disabled = !running;
+        $("stop2").disabled = !running;
       }
 
       function configFromForm() {
