@@ -64,6 +64,11 @@ https://feather.openai.com/api/v2/tasks/search
 python -m feather_auto.dashboard_server --port 8765
 ```
 
+On startup, the dashboard checks the configured Git upstream for new commits. If
+the local branch is behind and the worktree is clean, it pulls the latest commit
+with `git pull --ff-only` and restarts itself before serving the page. If local
+changes are present, it skips the pull and starts with the current files.
+
 7. Open:
 
 ```text

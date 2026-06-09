@@ -316,6 +316,82 @@
         margin: 3px 0;
       }
 
+      .timer-alert {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: none;
+        place-items: center;
+        padding: 24px;
+        background: rgba(17, 24, 39, 0.86);
+      }
+
+      .timer-alert.show {
+        display: grid;
+      }
+
+      .timer-alert-card {
+        width: min(720px, 100%);
+        border: 3px solid #fbbf24;
+        border-radius: var(--radius);
+        background: #7f1d1d;
+        color: #fff7ed;
+        padding: 28px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+      }
+
+      .timer-alert-kicker {
+        margin-bottom: 8px;
+        color: #fde68a;
+        font-size: 13px;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .timer-alert-title {
+        margin: 0;
+        font-size: 34px;
+        line-height: 1.05;
+        font-weight: 900;
+      }
+
+      .timer-alert-detail {
+        margin: 14px 0 0;
+        color: #ffedd5;
+        font-size: 16px;
+        line-height: 1.45;
+      }
+
+      .timer-alert-task {
+        margin-top: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.32);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.1);
+        padding: 12px;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
+      .timer-alert-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 20px;
+      }
+
+      .timer-alert-actions button {
+        border-color: #fde68a;
+        background: #fde68a;
+        color: #451a03;
+      }
+
+      .timer-alert-actions button:hover {
+        border-color: #facc15;
+        background: #facc15;
+      }
+
       .run-pill {
         display: inline-flex;
         align-items: center;
@@ -638,8 +714,22 @@
       </div>
     </div>
 
+    <div class="timer-alert" id="timerAlert" role="alertdialog" aria-modal="true" aria-labelledby="timerAlertTitle">
+      <div class="timer-alert-card">
+        <div class="timer-alert-kicker">Task claimed</div>
+        <h2 class="timer-alert-title" id="timerAlertTitle">Open Insightful timer now</h2>
+        <p class="timer-alert-detail">The task was claimed successfully. Start Insightful tracking before doing any work.</p>
+        <div class="timer-alert-task" id="timerAlertTask">-</div>
+        <div class="timer-alert-actions">
+          <button id="ackTimerAlert">Insightful timer is on</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let latest = null;
+      let titleFlashTimer = null;
+      let originalTitle = document.title;
 
       const $ = (id) => document.getElementById(id);
 
@@ -703,6 +793,80 @@
 
       function cleanLog(text) {
         return (text || "No log yet.").replace(/\u0007/g, "");
+      }
+
+      function claimAlertKey(taskId) {
+        return `feather.timerAlertAck.${taskId || "unknown"}`;
+      }
+
+      function playTimerAlertSound() {
+        try {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContext) return;
+          const context = new AudioContext();
+          const now = context.currentTime;
+          for (let index = 0; index < 5; index += 1) {
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = "square";
+            oscillator.frequency.setValueAtTime(index % 2 ? 740 : 980, now + index * 0.22);
+            gain.gain.setValueAtTime(0.0001, now + index * 0.22);
+            gain.gain.exponentialRampToValueAtTime(0.2, now + index * 0.22 + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.22 + 0.16);
+            oscillator.connect(gain).connect(context.destination);
+            oscillator.start(now + index * 0.22);
+            oscillator.stop(now + index * 0.22 + 0.18);
+          }
+          setTimeout(() => context.close().catch(() => {}), 1500);
+        } catch {
+          // Audio can be blocked until the page has a user gesture.
+        }
+      }
+
+      function startTitleFlash() {
+        if (titleFlashTimer) return;
+        let urgent = false;
+        titleFlashTimer = setInterval(() => {
+          urgent = !urgent;
+          document.title = urgent ? "OPEN INSIGHTFUL TIMER" : originalTitle;
+        }, 700);
+      }
+
+      function stopTitleFlash() {
+        if (titleFlashTimer) {
+          clearInterval(titleFlashTimer);
+          titleFlashTimer = null;
+        }
+        document.title = originalTitle;
+      }
+
+      function showTimerAlert(status) {
+        const taskId = status.task_id || "";
+        if (localStorage.getItem(claimAlertKey(taskId))) return;
+        $("timerAlertTask").textContent = [
+          status.title ? `title: ${status.title}` : "",
+          taskId ? `task: ${taskId}` : "",
+          status.campaign_id ? `campaign: ${status.campaign_id}` : "",
+        ].filter(Boolean).join("\n") || "Task claimed.";
+        $("timerAlert").classList.add("show");
+        startTitleFlash();
+        if ($("timerAlert").dataset.soundTaskId !== taskId) {
+          $("timerAlert").dataset.soundTaskId = taskId;
+          playTimerAlertSound();
+        }
+      }
+
+      function hideTimerAlert() {
+        $("timerAlert").classList.remove("show");
+        stopTitleFlash();
+      }
+
+      function handleClaimedAlert(status) {
+        if (status.state !== "claimed") {
+          hideTimerAlert();
+          return;
+        }
+        showTimerAlert(status);
       }
 
       function matchFirst(text, patterns) {
@@ -826,12 +990,12 @@
         latest = await api("/api/state");
         const status = latest.status || {};
         const running = latest.running;
-        const state = running ? status.state || "running" : "stopped";
+        const state = status.state || (running ? "running" : "stopped");
         const phase = status.phase || "-";
 
         renderCampaigns(latest.campaigns, status.campaign_id);
 
-        setText("running", running ? `running (${latest.worker_id || "worker"})` : "stopped");
+        setText("running", running ? `running (${latest.worker_id || "worker"})` : state);
         setText("state", state);
         setText("phase", running ? phase : "-");
         setText("unclaimed", status.unclaimed_count);
@@ -849,7 +1013,7 @@
         setText("taskBatch", batchText(status.batch));
         setText("taskSaved", status.saved);
 
-        $("dot").className = `dot ${running ? state : ""}`;
+        $("dot").className = `dot ${state}`;
         $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status}` : "";
         $("logMeta").textContent = latest.paths?.log || "-";
         $("log").textContent = cleanLog(latest.log_tail);
@@ -857,6 +1021,7 @@
         $("stop").disabled = !running;
         $("stop2").disabled = !running;
         if (!$("curlText").value.trim()) currentCurlValidation();
+        handleClaimedAlert(status);
       }
 
       function configFromForm() {
@@ -917,6 +1082,11 @@
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
       $("curlText").addEventListener("input", currentCurlValidation);
       $("campaignId").addEventListener("change", currentCurlValidation);
+      $("ackTimerAlert").addEventListener("click", () => {
+        const taskId = latest?.status?.task_id || "unknown";
+        localStorage.setItem(claimAlertKey(taskId), "1");
+        hideTimerAlert();
+      });
 
       refresh().catch((error) => setMessage(error.message));
       setInterval(() => refresh().catch(() => {}), 1000);

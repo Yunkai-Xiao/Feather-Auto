@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 import threading
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -73,6 +75,65 @@ def clean_runtime_files() -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def git_command(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
+def maybe_update_from_git(argv: list[str] | None = None) -> None:
+    if os.environ.get("FEATHER_AUTO_SKIP_STARTUP_UPDATE"):
+        print("Startup update: skipped by FEATHER_AUTO_SKIP_STARTUP_UPDATE.", flush=True)
+        return
+    if os.environ.get("FEATHER_AUTO_UPDATED_ON_START"):
+        return
+    if git_command("rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+        return
+
+    branch = git_command("branch", "--show-current").stdout.strip()
+    if not branch:
+        print("Startup update: skipped because Git is detached.", flush=True)
+        return
+
+    upstream = git_command("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if upstream.returncode != 0:
+        print("Startup update: skipped because no upstream is configured.", flush=True)
+        return
+
+    dirty = git_command("status", "--porcelain")
+    if dirty.stdout.strip():
+        print("Startup update: skipped because local changes are present.", flush=True)
+        return
+
+    fetch = git_command("fetch", "--quiet")
+    if fetch.returncode != 0:
+        print(f"Startup update: fetch failed: {(fetch.stderr or fetch.stdout).strip()}", flush=True)
+        return
+
+    head = git_command("rev-parse", "HEAD").stdout.strip()
+    remote = git_command("rev-parse", "@{u}").stdout.strip()
+    base = git_command("merge-base", "HEAD", "@{u}").stdout.strip()
+    if not head or not remote or not base or head == remote:
+        print("Startup update: already up to date.", flush=True)
+        return
+    if base != head:
+        print("Startup update: skipped because local branch has diverged.", flush=True)
+        return
+
+    pull = git_command("pull", "--ff-only", "--quiet")
+    if pull.returncode != 0:
+        print(f"Startup update: pull failed: {(pull.stderr or pull.stdout).strip()}", flush=True)
+        return
+
+    print(f"Startup update: pulled latest {upstream.stdout.strip()}; restarting.", flush=True)
+    env = {**os.environ, "FEATHER_AUTO_UPDATED_ON_START": "1"}
+    os.execve(sys.executable, [sys.executable, "-m", "feather_auto.dashboard_server", *(argv or sys.argv[1:])], env)
 
 
 class MonitorController:
@@ -276,6 +337,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> int:
+    maybe_update_from_git(argv)
+
     parser = argparse.ArgumentParser(description="Run the Feather Auto dashboard server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
