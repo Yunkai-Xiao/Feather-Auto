@@ -274,6 +274,48 @@
         font-weight: 650;
       }
 
+      .curl-check {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-subtle);
+        padding: 9px;
+        font-size: 12px;
+      }
+
+      .curl-check.pass {
+        border-color: rgba(21, 128, 61, 0.35);
+        background: #f0fdf4;
+      }
+
+      .curl-check.fail {
+        border-color: rgba(185, 28, 28, 0.35);
+        background: #fef2f2;
+      }
+
+      .curl-check-title {
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-weight: 750;
+      }
+
+      .curl-check.pass .curl-check-title {
+        color: var(--success);
+      }
+
+      .curl-check.fail .curl-check-title {
+        color: var(--danger);
+      }
+
+      .curl-check ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      .curl-check li {
+        margin: 3px 0;
+      }
+
       .run-pill {
         display: inline-flex;
         align-items: center;
@@ -517,6 +559,10 @@
             </div>
             <div class="panel-body">
               <textarea id="curlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/v2/tasks/search' ..."></textarea>
+              <div class="curl-check" id="curlCheck">
+                <div class="curl-check-title" id="curlCheckTitle">Paste a task-search cURL to validate it.</div>
+                <ul id="curlCheckList"></ul>
+              </div>
             </div>
           </section>
         </aside>
@@ -659,6 +705,123 @@
         return (text || "No log yet.").replace(/\u0007/g, "");
       }
 
+      function matchFirst(text, patterns) {
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match) return match[1] || match[0];
+        }
+        return "";
+      }
+
+      function extractDataRaw(text) {
+        const patterns = [
+          /--data-raw\s+\$?'((?:[^'\\]|\\.)*)'/s,
+          /--data-raw\s+"((?:[^"\\]|\\.)*)"/s,
+          /--data-raw\s+\^"((?:.|\n)*?)\^"/s,
+        ];
+        return matchFirst(text, patterns).replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\^"/g, '"');
+      }
+
+      function validateCurlText(text) {
+        const trimmed = text.trim();
+        const campaignId = $("campaignId").value.trim();
+        const checks = [];
+        const add = (ok, pass, fail) => checks.push({ ok, text: ok ? pass : fail });
+
+        if (!trimmed) {
+          return { ok: false, empty: true, checks: [] };
+        }
+
+        const commandUrl = matchFirst(trimmed, [
+          /^curl\s+\$?'([^']+)'/is,
+          /^curl\s+"([^"]+)"/is,
+          /^curl\s+(\S+)/is,
+        ]);
+        add(
+          /^https:\/\/feather\.openai\.com\/api\/v2\/tasks\/search(?:[?#].*)?$/i.test(commandUrl),
+          "URL is Feather task search.",
+          "URL must be https://feather.openai.com/api/v2/tasks/search."
+        );
+
+        add(
+          /(?:^|\s)-b\s+(?:\$?'[^']+'|"[^"]+"|\S+)/is.test(trimmed) || /-H\s+['"]cookie:/i.test(trimmed),
+          "Cookie is present.",
+          "Missing cookie. Copy the request with cookies included."
+        );
+
+        add(
+          /-H\s+['"]content-type:\s*application\/json/i.test(trimmed),
+          "Content-Type is application/json.",
+          "Missing content-type: application/json header."
+        );
+
+        add(
+          /-H\s+['"](?:origin|referer):\s*https:\/\/feather\.openai\.com/i.test(trimmed),
+          "Feather origin or referer is present.",
+          "Missing Feather origin/referer header."
+        );
+
+        const dataRaw = extractDataRaw(trimmed);
+        add(Boolean(dataRaw), "JSON payload is present.", "Missing --data-raw JSON payload.");
+
+        let payload = null;
+        if (dataRaw) {
+          try {
+            payload = JSON.parse(dataRaw);
+            checks.push({ ok: true, text: "Payload parses as JSON." });
+          } catch {
+            checks.push({ ok: false, text: "Payload is not valid JSON." });
+          }
+        }
+
+        if (payload) {
+          add(
+            payload.campaign_id === campaignId,
+            "Payload campaign matches selected campaign.",
+            `Payload campaign must match ${campaignId}.`
+          );
+          add(
+            Array.isArray(payload.workflow_statuses) && payload.workflow_statuses.includes("unclaimed"),
+            "Payload searches unclaimed tasks.",
+            'Payload workflow_statuses should include "unclaimed".'
+          );
+          add(
+            Number(payload.page_size) > 0,
+            "Payload has a positive page_size.",
+            "Payload page_size must be positive."
+          );
+        }
+
+        return { ok: checks.every((check) => check.ok), empty: false, checks };
+      }
+
+      function renderCurlValidation(result) {
+        const box = $("curlCheck");
+        const title = $("curlCheckTitle");
+        const list = $("curlCheckList");
+        box.classList.remove("pass", "fail");
+        list.innerHTML = "";
+
+        if (result.empty) {
+          title.textContent = latest?.curl_saved ? "No new cURL pasted. Saved cURL will be used." : "Paste a task-search cURL to validate it.";
+          return;
+        }
+
+        box.classList.add(result.ok ? "pass" : "fail");
+        title.textContent = result.ok ? "cURL looks valid." : "cURL needs attention.";
+        for (const check of result.checks) {
+          const item = document.createElement("li");
+          item.textContent = `${check.ok ? "OK" : "Fix"}: ${check.text}`;
+          list.appendChild(item);
+        }
+      }
+
+      function currentCurlValidation() {
+        const result = validateCurlText($("curlText").value);
+        renderCurlValidation(result);
+        return result;
+      }
+
       async function refresh() {
         latest = await api("/api/state");
         const status = latest.status || {};
@@ -693,6 +856,7 @@
         $("log").scrollTop = $("log").scrollHeight;
         $("stop").disabled = !running;
         $("stop2").disabled = !running;
+        if (!$("curlText").value.trim()) currentCurlValidation();
       }
 
       function configFromForm() {
@@ -708,6 +872,11 @@
       }
 
       async function start() {
+        const validation = currentCurlValidation();
+        if (!validation.ok && !validation.empty) {
+          setMessage("Fix the pasted cURL before starting.");
+          return;
+        }
         setMessage("Starting...");
         const result = await api("/api/start", {
           method: "POST",
@@ -726,6 +895,11 @@
       }
 
       async function saveCurl() {
+        const validation = currentCurlValidation();
+        if (!validation.ok) {
+          setMessage(validation.empty ? "Paste a cURL before saving." : "Fix the pasted cURL before saving.");
+          return;
+        }
         setMessage("Saving cURL...");
         await api("/api/save-curl", {
           method: "POST",
@@ -741,6 +915,8 @@
       $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
+      $("curlText").addEventListener("input", currentCurlValidation);
+      $("campaignId").addEventListener("change", currentCurlValidation);
 
       refresh().catch((error) => setMessage(error.message));
       setInterval(() => refresh().catch(() => {}), 1000);

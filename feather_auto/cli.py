@@ -417,7 +417,8 @@ def print_claim_result(
         body = response.json()
         emit(json.dumps(body, ensure_ascii=False, indent=2)[:2000], flush=True)
         first = body[0] if isinstance(body, list) and body else {}
-        update = first.get("data", {}).get("updateTaskStatus") if isinstance(first, dict) else None
+        data = first.get("data") if isinstance(first, dict) else None
+        update = data.get("updateTaskStatus") if isinstance(data, dict) else None
         claim_succeeded = (
             response.status_code == 200
             and isinstance(update, dict)
