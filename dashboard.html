@@ -605,6 +605,17 @@
 
               <div class="row">
                 <div class="field">
+                  <label for="tagCountMin">Tag min</label>
+                  <input id="tagCountMin" type="number" min="0" step="1" placeholder="Any" />
+                </div>
+                <div class="field">
+                  <label for="tagCountMax">Tag max</label>
+                  <input id="tagCountMax" type="number" min="0" step="1" placeholder="Any" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
                   <label for="intervalMin">Interval min</label>
                   <input id="intervalMin" type="number" min="1" step="0.1" value="1.2" />
                 </div>
@@ -692,6 +703,10 @@
                 <div class="kv">
                   <span class="label">Batch</span>
                   <div class="kv-value muted" id="taskBatch">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Tag count</span>
+                  <div class="kv-value muted" id="taskTagCount">-</div>
                 </div>
                 <div class="kv">
                   <span class="label">Saved JSON</span>
@@ -1011,6 +1026,7 @@
         setText("taskId", status.task_id);
         setText("taskTitle", status.title);
         setText("taskBatch", batchText(status.batch));
+        setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
 
         $("dot").className = `dot ${state}`;
@@ -1029,6 +1045,8 @@
           curlText: $("curlText").value,
           campaignId: $("campaignId").value.trim(),
           batchSuffix: $("batchSuffix").value.trim(),
+          tagCountMin: $("tagCountMin").value.trim(),
+          tagCountMax: $("tagCountMax").value.trim(),
           intervalMin: Number($("intervalMin").value),
           intervalMax: Number($("intervalMax").value),
           claim: $("claim").checked,

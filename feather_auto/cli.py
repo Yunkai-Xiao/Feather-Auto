@@ -65,6 +65,8 @@ class MonitorConfig:
     save: str | None = "last_found_task.json"
     status_file: str | None = None
     task_kind: str | None = None
+    tag_count_min: int | None = None
+    tag_count_max: int | None = None
 
 
 class Tee:
@@ -281,9 +283,27 @@ def task_matches_filters(
     batch_name: str | None,
     batch_suffix: str | None,
     allowed_batch_refs: list[dict[str, Any]],
+    tag_count_min: int | None,
+    tag_count_max: int | None,
 ) -> bool:
-    if not batch_id and not batch_name and not batch_suffix and not allowed_batch_refs:
+    if (
+        not batch_id
+        and not batch_name
+        and not batch_suffix
+        and not allowed_batch_refs
+        and tag_count_min is None
+        and tag_count_max is None
+    ):
         return True
+
+    if tag_count_min is not None or tag_count_max is not None:
+        count = task_tag_count(task)
+        if count is None:
+            return False
+        if tag_count_min is not None and count < tag_count_min:
+            return False
+        if tag_count_max is not None and count > tag_count_max:
+            return False
 
     values = list(nested_values(task))
     if batch_id and batch_id not in values:
@@ -305,6 +325,26 @@ def task_matches_filters(
             return False
 
     return True
+
+
+def task_tag_count(task: dict[str, Any]) -> int | None:
+    tags = task.get("tags")
+    if tags is None:
+        return None
+    if isinstance(tags, list):
+        return len(tags)
+    if isinstance(tags, dict):
+        return len(tags)
+    return 1
+
+
+def tag_count_filter_payload(min_count: int | None, max_count: int | None) -> dict[str, int] | None:
+    payload = {}
+    if min_count is not None:
+        payload["min"] = min_count
+    if max_count is not None:
+        payload["max"] = max_count
+    return payload or None
 
 
 def batch_summary(task: dict[str, Any]) -> dict[str, Any]:
@@ -467,6 +507,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-id", help="Only match tasks containing this batch id.")
     parser.add_argument("--batch-name", help="Only match tasks containing this batch name.")
     parser.add_argument("--batch-suffix", help="Only match active batch names ending with this suffix.")
+    parser.add_argument("--tag-count", type=int, help="Shorthand for --tag-count-min N --tag-count-max N.")
+    parser.add_argument("--tag-count-min", type=int, help="Only match tasks with at least this many tags.")
+    parser.add_argument("--tag-count-max", type=int, help="Only match tasks with at most this many tags.")
     parser.add_argument("--save", default="last_found_task.json", help="Where to save the found task JSON. Use empty string to disable.")
     parser.add_argument("--log-file", help="Append stdout/stderr to this file.")
     parser.add_argument("--status-file", help="Continuously write current monitor status as JSON.")
@@ -506,6 +549,13 @@ def run_monitor(
     min_interval, max_interval = validate_interval_values(config.interval, config.interval_min, config.interval_max)
     if config.page_size < 1:
         raise SystemExit("Use --page-size >= 1.")
+    if config.tag_count_min is not None and config.tag_count_min < 0:
+        raise SystemExit("Use --tag-count-min >= 0.")
+    if config.tag_count_max is not None and config.tag_count_max < 0:
+        raise SystemExit("Use --tag-count-max >= 0.")
+    if config.tag_count_min is not None and config.tag_count_max is not None and config.tag_count_max < config.tag_count_min:
+        raise SystemExit("Use --tag-count-max >= --tag-count-min.")
+    tag_count_filter = tag_count_filter_payload(config.tag_count_min, config.tag_count_max)
 
     def stop_requested() -> bool:
         return bool(stop_event is not None and stop_event.is_set())
@@ -521,14 +571,23 @@ def run_monitor(
         campaign_id=config.campaign_id,
         claim=config.claim,
         batch_suffix=config.batch_suffix,
+        tag_count_filter=tag_count_filter,
     )
 
     if stop_requested():
-        update_status(state="stopped", campaign_id=config.campaign_id, claim=config.claim, batch_suffix=config.batch_suffix)
+        update_status(
+            state="stopped",
+            campaign_id=config.campaign_id,
+            claim=config.claim,
+            batch_suffix=config.batch_suffix,
+            tag_count_filter=tag_count_filter,
+        )
         return 0
 
     curl_text = read_curl_text(config.curl_file)
     cookie, payload = request_parts_from_curl(curl_text, config.campaign_id, config.page_size)
+    if tag_count_filter is not None:
+        payload["include_tags"] = True
     campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
     search_headers = build_headers(cookie, config.campaign_id, campaign_url)
 
@@ -539,12 +598,17 @@ def run_monitor(
         campaign_id=config.campaign_id,
         claim=config.claim,
         batch_suffix=config.batch_suffix,
+        tag_count_filter=tag_count_filter,
         active_batch_matches=len(allowed_batch_refs),
     )
     if config.batch_suffix:
         emit(f"batch_suffix={config.batch_suffix} active_matches={len(allowed_batch_refs)}", flush=True)
         for ref in allowed_batch_refs:
             emit(f"BATCH_REF {ref.get('id')} {ref.get('name')}", flush=True)
+    if tag_count_filter is not None:
+        min_label = "*" if config.tag_count_min is None else config.tag_count_min
+        max_label = "*" if config.tag_count_max is None else config.tag_count_max
+        emit(f"tag_count_range={min_label}..{max_label}", flush=True)
 
     seen: set[str] = set()
     while True:
@@ -555,6 +619,7 @@ def run_monitor(
                 campaign_id=config.campaign_id,
                 claim=config.claim,
                 batch_suffix=config.batch_suffix,
+                tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
             )
             return 0
@@ -569,6 +634,7 @@ def run_monitor(
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_suffix=config.batch_suffix,
+            tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
             unclaimed_count=len(tasks),
             last_poll=now,
@@ -578,7 +644,15 @@ def run_monitor(
             if stop_requested():
                 break
 
-            if not task_matches_filters(task, config.batch_id, config.batch_name, config.batch_suffix, allowed_batch_refs):
+            if not task_matches_filters(
+                task,
+                config.batch_id,
+                config.batch_name,
+                config.batch_suffix,
+                allowed_batch_refs,
+                config.tag_count_min,
+                config.tag_count_max,
+            ):
                 continue
 
             task_id = task.get("id")
@@ -588,6 +662,9 @@ def run_monitor(
             seen.add(task_id)
             title = task.get("title") or task.get("description") or "(untitled)"
             emit(f"FOUND {task_id}: {title}", flush=True)
+            current_tag_count = task_tag_count(task)
+            if current_tag_count is not None:
+                emit(f"TAGS count={current_tag_count}", flush=True)
             summary = batch_summary(task)
             if summary:
                 emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
@@ -598,6 +675,8 @@ def run_monitor(
                 task_id=task_id,
                 title=title,
                 batch=summary,
+                tag_count=current_tag_count,
+                tag_count_filter=tag_count_filter,
             )
 
             save_path = config.save or None
@@ -629,6 +708,8 @@ def run_monitor(
                         task_id=task_id,
                         title=title,
                         batch=summary,
+                        tag_count=current_tag_count,
+                        tag_count_filter=tag_count_filter,
                     )
                     continue
                 update_status(
@@ -637,6 +718,8 @@ def run_monitor(
                     task_id=task_id,
                     title=title,
                     batch=summary,
+                    tag_count=current_tag_count,
+                    tag_count_filter=tag_count_filter,
                     saved=save_path,
                 )
                 emit(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
@@ -657,6 +740,7 @@ def run_monitor(
                 campaign_id=config.campaign_id,
                 claim=config.claim,
                 batch_suffix=config.batch_suffix,
+                tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
             )
             return 0
@@ -671,6 +755,7 @@ def run_monitor(
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_suffix=config.batch_suffix,
+            tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
             unclaimed_count=len(tasks),
             next_sleep_seconds=round(delay, 2),
@@ -684,6 +769,7 @@ def run_monitor(
                     campaign_id=config.campaign_id,
                     claim=config.claim,
                     batch_suffix=config.batch_suffix,
+                    tag_count_filter=tag_count_filter,
                     active_batch_matches=len(allowed_batch_refs),
                     unclaimed_count=len(tasks),
                     last_poll=now,
@@ -694,6 +780,14 @@ def run_monitor(
 
 
 def config_from_args(args: argparse.Namespace) -> MonitorConfig:
+    tag_count_min = args.tag_count_min
+    tag_count_max = args.tag_count_max
+    if args.tag_count is not None:
+        if tag_count_min is not None or tag_count_max is not None:
+            raise SystemExit("Use either --tag-count or --tag-count-min/--tag-count-max, not both.")
+        tag_count_min = args.tag_count
+        tag_count_max = args.tag_count
+
     return MonitorConfig(
         campaign_id=args.campaign_id,
         curl_file=args.curl_file,
@@ -710,6 +804,8 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         save=args.save or None,
         status_file=args.status_file,
         task_kind=args.task_kind,
+        tag_count_min=tag_count_min,
+        tag_count_max=tag_count_max,
     )
 
 

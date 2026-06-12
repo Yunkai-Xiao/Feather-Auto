@@ -169,6 +169,18 @@ Supported CLI filters:
 - `--batch-name slides-teacher-master-spud-stage2-r4-resume240-raw-creation`
 - `--batch-id 4905bfbb-d090-48be-8db8-b85267348a80`
 
+## Tag Count Filtering
+
+The dashboard `Tag min` and `Tag max` fields and CLI `--tag-count-min` /
+`--tag-count-max` options only accept tasks whose `tags` array length falls
+inside the inclusive range. Either side can be left blank to make the range
+open-ended. When either filter is set, the monitor asks the Feather task search
+API to include tags and applies the check before any claim attempt.
+
+For example, `--tag-count-min 4 --tag-count-max 8` means tasks with 4 through 8
+tags can be opened or claimed, while tasks outside that range are ignored.
+`--tag-count 6` is still supported as shorthand for exactly 6 tags.
+
 ## CLI Usage
 
 Dashboard usage is recommended, but the CLI remains useful for one-off tests.
@@ -195,6 +207,12 @@ Claim the first matching task:
 
 ```powershell
 python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt
+```
+
+Claim only tasks with 4 through 8 tags:
+
+```powershell
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
 ```
 
 Use randomized polling intervals:

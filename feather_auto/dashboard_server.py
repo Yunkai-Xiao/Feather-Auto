@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from .cli import MonitorConfig, run_monitor
+from .cli import MonitorConfig, run_monitor, tag_count_filter_payload
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +60,15 @@ def read_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
         return {}
     raw = handler.rfile.read(length)
     return json.loads(raw.decode("utf-8"))
+
+
+def optional_int(value: Any, label: str) -> int | None:
+    if value in (None, ""):
+        return None
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{label} must be >= 0.")
+    return parsed
 
 
 def tail(path: Path, max_lines: int = 260) -> str:
@@ -188,6 +197,15 @@ class MonitorController:
 
         campaign_id = str(config.get("campaignId") or DEFAULT_CAMPAIGN_ID).strip()
         batch_suffix = str(config.get("batchSuffix") or "-raw-creation").strip()
+        tag_count_min = optional_int(config.get("tagCountMin"), "Tag count min")
+        tag_count_max = optional_int(config.get("tagCountMax"), "Tag count max")
+        raw_tag_count = config.get("tagCount")
+        if raw_tag_count not in (None, ""):
+            if tag_count_min is not None or tag_count_max is not None:
+                raise ValueError("Use either Tag count or a Tag count range, not both.")
+            tag_count_min = tag_count_max = optional_int(raw_tag_count, "Tag count")
+        if tag_count_min is not None and tag_count_max is not None and tag_count_max < tag_count_min:
+            raise ValueError("Tag count max must be >= tag count min.")
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
         if interval_min < 1:
@@ -205,6 +223,8 @@ class MonitorController:
             status_file=str(STATUS_FILE),
             claim=bool(config.get("claim", True)),
             open_task=bool(config.get("openTask", True)),
+            tag_count_min=tag_count_min,
+            tag_count_max=tag_count_max,
         )
 
         with self._lock:
@@ -238,6 +258,7 @@ class MonitorController:
                 "campaign_name": campaign_name(campaign_id),
                 "claim": monitor_config.claim,
                 "batch_suffix": batch_suffix,
+                "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
             }
         thread.start()
         return {"started": True, "worker_id": thread.ident}
