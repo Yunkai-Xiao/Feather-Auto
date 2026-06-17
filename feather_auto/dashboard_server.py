@@ -92,13 +92,16 @@ def clean_runtime_files() -> None:
 
 
 def git_command(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
 
 
 def maybe_update_from_git(argv: list[str] | None = None) -> None:

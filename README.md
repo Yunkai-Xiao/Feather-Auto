@@ -36,6 +36,40 @@ work. Do not share copied cURL files, cookies, logs, or saved task JSON.
 - Windows PowerShell examples are shown below, but the Python package itself is
   not Windows-specific
 
+## One-Click Windows Setup
+
+On a fresh Windows computer, copy or clone this repo, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+Or double-click:
+
+```text
+scripts\install-windows.cmd
+```
+
+The setup script:
+
+- Installs Python 3.12 with `winget` if Python 3.10+ is not already available.
+- Creates `.venv` in the repo.
+- Installs the package and dependencies with `pip install -e .`.
+- Adds `feather` and `Start-Feather` commands to your PowerShell profile.
+- Starts the dashboard and opens `http://127.0.0.1:8765/dashboard.html`.
+
+After setup, open a new PowerShell and start the dashboard with:
+
+```powershell
+feather
+```
+
+If you do not want setup to edit your PowerShell profile or start the dashboard:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -NoProfileCommand -NoStart
+```
+
 Install dependencies from the repo root:
 
 ```powershell
