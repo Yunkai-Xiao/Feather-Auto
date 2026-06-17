@@ -13,6 +13,8 @@ scripted checks and debugging.
 - Supports randomized polling intervals.
 - Can run in observe-only mode, open-on-found mode, or claim mode.
 - Stops after a successful claim so one account does not pick up multiple tasks.
+- Can open the claimed task in your existing browser for a Codex-assisted slide
+  review pass.
 - Keeps a local event log and status JSON for debugging.
 - Provides a local dashboard with Start, Stop, campaign selection, cURL paste,
   runtime metrics, current task details, and live log tail.
@@ -85,6 +87,33 @@ outputs/current_feather_request.curl.txt
 ```
 
 That file contains authentication material. Keep it local.
+
+## Codex-Assisted Slide Review
+
+For slide-review tasks, the fast path is to reuse the same logged-in Feather
+session and download the slide assets through Feather's GraphQL/API flow. Copy
+these requests from Chrome DevTools Network once and keep them local:
+
+- `TaskOrStagecraftRedirect`
+- `FetchConversationWidget`
+
+Then run:
+
+```powershell
+python -m feather_auto.download_task_slides `
+  --api-original `
+  --task-id <claimed-task-id> `
+  --curl-file outputs\current_feather_request.curl.txt `
+  --redirect-graphql-curl-file <TaskOrStagecraftRedirect.curl.txt> `
+  --conversation-graphql-curl-file <FetchConversationWidget.curl.txt> `
+  --output-dir outputs\task_slides\<claimed-task-id>
+```
+
+`--api-original` preserves the copied GraphQL operation bodies instead of using
+the smaller fallback query. The downloader borrows Chrome-style headers from the
+copied cURL templates and overrides only the values that must change at runtime:
+cookie, referer, campaign id, and task id. It writes the raw GraphQL responses,
+all slide images, `download_results.json`, and a contact sheet for visual review.
 
 ## Dashboard Modes
 

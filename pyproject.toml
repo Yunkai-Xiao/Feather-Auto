@@ -15,3 +15,5 @@ dependencies = [
 [project.scripts]
 feather-auto = "feather_auto.cli:main"
 feather-dashboard = "feather_auto.dashboard_server:main"
+feather-download-slides = "feather_auto.download_task_slides:main"
+feather-review-slides = "feather_auto.review_task_slides:main"

@@ -628,6 +628,7 @@
               <div class="toggle-list">
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
                 <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
+                <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" checked /></label>
               </div>
 
               <div class="action-grid">
@@ -650,6 +651,24 @@
                 <div class="curl-check-title" id="curlCheckTitle">Paste a task-search cURL to validate it.</div>
                 <ul id="curlCheckList"></ul>
               </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">GraphQL templates</h2>
+              <span class="small">for slide download</span>
+            </div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="redirectCurlText">TaskOrStagecraftRedirect cURL</label>
+                <textarea id="redirectCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
+              </div>
+              <div class="field">
+                <label for="conversationCurlText">FetchConversationWidget cURL</label>
+                <textarea id="conversationCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
+              </div>
+              <button id="saveGraphqlCurls">Save GraphQL templates</button>
             </div>
           </section>
         </aside>
@@ -711,6 +730,10 @@
                 <div class="kv">
                   <span class="label">Saved JSON</span>
                   <div class="kv-value muted" id="taskSaved">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Review pipeline</span>
+                  <div class="kv-value muted" id="reviewState">-</div>
                 </div>
               </div>
             </div>
@@ -1028,9 +1051,10 @@
         setText("taskBatch", batchText(status.batch));
         setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
+        setText("reviewState", status.review ? `${status.review.state || "-"} ${status.review.output_dir || ""}`.trim() : (status.auto_review ? "enabled" : "off"));
 
         $("dot").className = `dot ${state}`;
-        $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status}` : "";
+        $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status} | ${latest.paths.review_output || ""}` : "";
         $("logMeta").textContent = latest.paths?.log || "-";
         $("log").textContent = cleanLog(latest.log_tail);
         $("log").scrollTop = $("log").scrollHeight;
@@ -1051,6 +1075,7 @@
           intervalMax: Number($("intervalMax").value),
           claim: $("claim").checked,
           openTask: $("openTask").checked,
+          autoReview: $("autoReview").checked,
         };
       }
 
@@ -1093,11 +1118,31 @@
         await refresh();
       }
 
+      async function saveGraphqlCurls() {
+        if (!$("redirectCurlText").value.trim() || !$("conversationCurlText").value.trim()) {
+          setMessage("Paste both GraphQL cURL templates before saving.");
+          return;
+        }
+        setMessage("Saving GraphQL templates...");
+        await api("/api/save-graphql-curls", {
+          method: "POST",
+          body: JSON.stringify({
+            redirectCurlText: $("redirectCurlText").value,
+            conversationCurlText: $("conversationCurlText").value,
+          }),
+        });
+        $("redirectCurlText").value = "";
+        $("conversationCurlText").value = "";
+        setMessage("GraphQL templates saved.");
+        await refresh();
+      }
+
       $("refresh").addEventListener("click", () => refresh().catch((error) => setMessage(error.message)));
       $("start").addEventListener("click", () => start().catch((error) => setMessage(error.message)));
       $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
+      $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
       $("curlText").addEventListener("input", currentCurlValidation);
       $("campaignId").addEventListener("change", currentCurlValidation);
       $("ackTimerAlert").addEventListener("click", () => {

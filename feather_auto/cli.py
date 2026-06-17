@@ -347,6 +347,32 @@ def tag_count_filter_payload(min_count: int | None, max_count: int | None) -> di
     return payload or None
 
 
+def tag_count_label(count: int | None) -> str:
+    return "unknown" if count is None else str(count)
+
+
+def task_log_title(task: dict[str, Any]) -> str:
+    return str(task.get("title") or task.get("description") or "(untitled)").replace("\r", " ").replace("\n", " ")
+
+
+def task_batch_name_label(task: dict[str, Any]) -> str:
+    value = task.get("task_batch_name") or task.get("batch_name") or task.get("task_batch_id")
+    if value is None:
+        return "unknown"
+    return str(value).replace("\r", " ").replace("\n", " ")
+
+
+def emit_task_tag_counts(tasks: list[dict[str, Any]], emit: Emit) -> None:
+    for index, task in enumerate(tasks, start=1):
+        task_id = task.get("id") or "unknown"
+        emit(
+            f"TASK_TAGS {index}/{len(tasks)} {task_id} "
+            f"tag_count={tag_count_label(task_tag_count(task))} "
+            f"batch_name={task_batch_name_label(task)} title={task_log_title(task)}",
+            flush=True,
+        )
+
+
 def batch_summary(task: dict[str, Any]) -> dict[str, Any]:
     summary = {}
     for key, value in task.items():
@@ -586,8 +612,7 @@ def run_monitor(
 
     curl_text = read_curl_text(config.curl_file)
     cookie, payload = request_parts_from_curl(curl_text, config.campaign_id, config.page_size)
-    if tag_count_filter is not None:
-        payload["include_tags"] = True
+    payload["include_tags"] = True
     campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
     search_headers = build_headers(cookie, config.campaign_id, campaign_url)
 
@@ -628,6 +653,8 @@ def run_monitor(
         data = poll_once(search_headers, payload)
         tasks = data.get("tasks", [])
         emit(f"[{now}] tasks={len(tasks)}", flush=True)
+        if tasks:
+            emit_task_tag_counts(tasks, emit)
         update_status(
             state="monitoring",
             phase="polling",
@@ -660,11 +687,17 @@ def run_monitor(
                 continue
 
             seen.add(task_id)
-            title = task.get("title") or task.get("description") or "(untitled)"
-            emit(f"FOUND {task_id}: {title}", flush=True)
+            title = task_log_title(task)
             current_tag_count = task_tag_count(task)
-            if current_tag_count is not None:
-                emit(f"TAGS count={current_tag_count}", flush=True)
+            if config.batch_suffix:
+                emit(
+                    f"FOUND {task_id}: {title} suffix={config.batch_suffix} "
+                    f"tag_count={tag_count_label(current_tag_count)} "
+                    f"batch_name={task_batch_name_label(task)}",
+                    flush=True,
+                )
+            else:
+                emit(f"FOUND {task_id}: {title}", flush=True)
             summary = batch_summary(task)
             if summary:
                 emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)

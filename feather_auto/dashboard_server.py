@@ -7,21 +7,26 @@ import subprocess
 import sys
 import threading
 import traceback
+from argparse import Namespace
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .cli import MonitorConfig, run_monitor, tag_count_filter_payload
+from .review_task_slides import run_review_pipeline
 
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS = ROOT / "outputs"
 CURL_FILE = OUTPUTS / "current_feather_request.curl.txt"
+REDIRECT_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_task_or_stagecraft_redirect.curl.txt"
+CONVERSATION_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_conversation_widget.curl.txt"
 LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
+REVIEW_OUTPUT_ROOT = OUTPUTS / "content_review"
 DEFAULT_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
 CAMPAIGNS = [
     {
@@ -169,7 +174,40 @@ class MonitorController:
         with self._lock:
             self._status = dict(payload)
 
-    def _run(self, config: MonitorConfig, stop_event: threading.Event) -> None:
+    def _review_claimed_task(self, task_id: str) -> None:
+        review_dir = REVIEW_OUTPUT_ROOT / task_id
+        try:
+            self._emit(f"REVIEW_START {task_id}", flush=True)
+            result = run_review_pipeline(
+                Namespace(
+                    task_id=task_id,
+                    curl_file=CURL_FILE,
+                    redirect_graphql_curl_file=REDIRECT_GRAPHQL_CURL_FILE,
+                    conversation_graphql_curl_file=CONVERSATION_GRAPHQL_CURL_FILE,
+                    output_dir=review_dir,
+                    model=os.environ.get("FEATHER_REVIEW_MODEL", "gpt-5.5"),
+                    skip_download=False,
+                    no_llm=False,
+                )
+            )
+            self._emit("REVIEW_DONE " + json.dumps(result, ensure_ascii=False), flush=True)
+            with self._lock:
+                self._status = {**self._status, "review": result}
+        except BaseException as exc:
+            error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            self._emit(f"REVIEW_FAILED {task_id} {error}", flush=True)
+            with self._lock:
+                self._status = {
+                    **self._status,
+                    "review": {
+                        "state": "failed",
+                        "task_id": task_id,
+                        "output_dir": str(review_dir),
+                        "error": error,
+                    },
+                }
+
+    def _run(self, config: MonitorConfig, stop_event: threading.Event, auto_review: bool) -> None:
         try:
             run_monitor(
                 config,
@@ -177,6 +215,9 @@ class MonitorController:
                 emit=self._emit,
                 status_callback=self._update_status,
             )
+            status = dict(self._status)
+            if auto_review and status.get("state") == "claimed" and status.get("task_id"):
+                self._review_claimed_task(str(status["task_id"]))
             with self._lock:
                 state = self._status.get("state")
                 if state not in {"claimed", "stopped", "error"}:
@@ -208,6 +249,7 @@ class MonitorController:
             raise ValueError("Tag count max must be >= tag count min.")
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
+        auto_review = bool(config.get("autoReview", True))
         if interval_min < 1:
             raise ValueError("Interval min must be >= 1 second.")
         if interval_max < interval_min:
@@ -244,7 +286,7 @@ class MonitorController:
         stop_event = threading.Event()
         thread = threading.Thread(
             target=self._run,
-            args=(monitor_config, stop_event),
+            args=(monitor_config, stop_event, auto_review),
             name="FeatherMonitorWorker",
             daemon=True,
         )
@@ -259,6 +301,7 @@ class MonitorController:
                 "claim": monitor_config.claim,
                 "batch_suffix": batch_suffix,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
+                "auto_review": auto_review,
             }
         thread.start()
         return {"started": True, "worker_id": thread.ident}
@@ -297,6 +340,9 @@ class MonitorController:
                 "log": str(LOG_FILE),
                 "status": str(STATUS_FILE),
                 "save": str(SAVE_FILE),
+                "redirect_graphql_curl": str(REDIRECT_GRAPHQL_CURL_FILE),
+                "conversation_graphql_curl": str(CONVERSATION_GRAPHQL_CURL_FILE),
+                "review_output": str(REVIEW_OUTPUT_ROOT),
             },
         }
 
@@ -351,6 +397,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 OUTPUTS.mkdir(parents=True, exist_ok=True)
                 CURL_FILE.write_text(curl_text, encoding="utf-8")
                 write_json(self, 200, {"ok": True, "curl_saved": True})
+                return
+            if self.path == "/api/save-graphql-curls":
+                payload = read_json_body(self)
+                redirect_text = str(payload.get("redirectCurlText") or "").strip()
+                conversation_text = str(payload.get("conversationCurlText") or "").strip()
+                if not redirect_text or not conversation_text:
+                    write_json(self, 400, {"ok": False, "error": "Both GraphQL cURL templates are required."})
+                    return
+                OUTPUTS.mkdir(parents=True, exist_ok=True)
+                REDIRECT_GRAPHQL_CURL_FILE.write_text(redirect_text, encoding="utf-8")
+                CONVERSATION_GRAPHQL_CURL_FILE.write_text(conversation_text, encoding="utf-8")
+                write_json(self, 200, {"ok": True, "graphql_curls_saved": True})
                 return
             write_json(self, 404, {"ok": False, "error": "Unknown endpoint."})
         except Exception as exc:
