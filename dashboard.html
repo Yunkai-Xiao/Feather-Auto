@@ -340,6 +340,15 @@
         box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
       }
 
+      .timer-alert.blocking-alert .timer-alert-card {
+        border-color: #fecaca;
+        background: #7f1d1d;
+      }
+
+      .timer-alert.blocking-alert .timer-alert-kicker {
+        color: #fecaca;
+      }
+
       .timer-alert-kicker {
         margin-bottom: 8px;
         color: #fde68a;
@@ -424,6 +433,11 @@
 
       .dot.claimed {
         background: #0284c7;
+      }
+
+      .dot.blocked_in_progress,
+      .dot.error {
+        background: var(--danger);
       }
 
       .metric-grid {
@@ -764,6 +778,19 @@
       </div>
     </div>
 
+    <div class="timer-alert blocking-alert" id="inProgressAlert" role="alertdialog" aria-modal="true" aria-labelledby="inProgressAlertTitle">
+      <div class="timer-alert-card">
+        <div class="timer-alert-kicker">Claim blocked</div>
+        <h2 class="timer-alert-title" id="inProgressAlertTitle">Existing in-progress task</h2>
+        <p class="timer-alert-detail">Claiming stopped because this account already has an in-progress task. Finish or release it before starting the monitor again.</p>
+        <div class="timer-alert-task" id="inProgressAlertTask">-</div>
+        <div class="timer-alert-actions">
+          <button id="openInProgressTask">Open task</button>
+          <button id="ackInProgressAlert">I see it</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let latest = null;
       let titleFlashTimer = null;
@@ -837,6 +864,10 @@
         return `feather.timerAlertAck.${taskId || "unknown"}`;
       }
 
+      function inProgressAlertKey(taskId) {
+        return `feather.inProgressBlockAck.${taskId || "unknown"}`;
+      }
+
       function playTimerAlertSound() {
         try {
           const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -861,12 +892,15 @@
         }
       }
 
-      function startTitleFlash() {
-        if (titleFlashTimer) return;
+      function startTitleFlash(titleText) {
+        const urgentTitle = titleText || "OPEN INSIGHTFUL TIMER";
+        if (titleFlashTimer && document.body.dataset.flashTitle === urgentTitle) return;
+        stopTitleFlash();
+        document.body.dataset.flashTitle = urgentTitle;
         let urgent = false;
         titleFlashTimer = setInterval(() => {
           urgent = !urgent;
-          document.title = urgent ? "OPEN INSIGHTFUL TIMER" : originalTitle;
+          document.title = urgent ? urgentTitle : originalTitle;
         }, 700);
       }
 
@@ -876,6 +910,7 @@
           titleFlashTimer = null;
         }
         document.title = originalTitle;
+        delete document.body.dataset.flashTitle;
       }
 
       function showTimerAlert(status) {
@@ -887,7 +922,7 @@
           status.campaign_id ? `campaign: ${status.campaign_id}` : "",
         ].filter(Boolean).join("\n") || "Task claimed.";
         $("timerAlert").classList.add("show");
-        startTitleFlash();
+        startTitleFlash("OPEN INSIGHTFUL TIMER");
         if ($("timerAlert").dataset.soundTaskId !== taskId) {
           $("timerAlert").dataset.soundTaskId = taskId;
           playTimerAlertSound();
@@ -896,15 +931,45 @@
 
       function hideTimerAlert() {
         $("timerAlert").classList.remove("show");
-        stopTitleFlash();
       }
 
-      function handleClaimedAlert(status) {
-        if (status.state !== "claimed") {
-          hideTimerAlert();
+      function showInProgressAlert(status) {
+        const taskId = status.in_progress_task_id || status.task_id || "";
+        if (localStorage.getItem(inProgressAlertKey(taskId))) return;
+        $("inProgressAlertTask").textContent = [
+          status.in_progress_title || status.title ? `title: ${status.in_progress_title || status.title}` : "",
+          taskId ? `task: ${taskId}` : "",
+          status.campaign_id ? `campaign: ${status.campaign_id}` : "",
+          status.blocking_reason || "",
+        ].filter(Boolean).join("\n") || "Claiming stopped.";
+        $("openInProgressTask").hidden = !status.in_progress_task_url;
+        $("openInProgressTask").dataset.url = status.in_progress_task_url || "";
+        $("inProgressAlert").classList.add("show");
+        startTitleFlash("CLAIM BLOCKED");
+        if ($("inProgressAlert").dataset.soundTaskId !== taskId) {
+          $("inProgressAlert").dataset.soundTaskId = taskId;
+          playTimerAlertSound();
+        }
+      }
+
+      function hideInProgressAlert() {
+        $("inProgressAlert").classList.remove("show");
+      }
+
+      function handleAlerts(status) {
+        if (status.state === "claimed") {
+          hideInProgressAlert();
+          showTimerAlert(status);
           return;
         }
-        showTimerAlert(status);
+        if (status.state === "blocked_in_progress") {
+          hideTimerAlert();
+          showInProgressAlert(status);
+          return;
+        }
+        hideTimerAlert();
+        hideInProgressAlert();
+        stopTitleFlash();
       }
 
       function matchFirst(text, patterns) {
@@ -1061,7 +1126,10 @@
         $("stop").disabled = !running;
         $("stop2").disabled = !running;
         if (!$("curlText").value.trim()) currentCurlValidation();
-        handleClaimedAlert(status);
+        if (state === "blocked_in_progress") {
+          setMessage(status.blocking_reason || "Claiming stopped because an in-progress task already exists.");
+        }
+        handleAlerts(status);
       }
 
       function configFromForm() {
@@ -1149,6 +1217,17 @@
         const taskId = latest?.status?.task_id || "unknown";
         localStorage.setItem(claimAlertKey(taskId), "1");
         hideTimerAlert();
+        stopTitleFlash();
+      });
+      $("openInProgressTask").addEventListener("click", () => {
+        const url = $("openInProgressTask").dataset.url;
+        if (url) window.open(url, "_blank", "noopener");
+      });
+      $("ackInProgressAlert").addEventListener("click", () => {
+        const taskId = latest?.status?.in_progress_task_id || latest?.status?.task_id || "unknown";
+        localStorage.setItem(inProgressAlertKey(taskId), "1");
+        hideInProgressAlert();
+        stopTitleFlash();
       });
 
       refresh().catch((error) => setMessage(error.message));

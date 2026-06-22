@@ -1,6 +1,6 @@
 param(
     [switch]$NoOpen,
-    [int]$Port = 8765
+    [int]$Port = 8000
 )
 
 $ErrorActionPreference = "Stop"

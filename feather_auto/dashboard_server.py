@@ -223,7 +223,7 @@ class MonitorController:
                 self._review_claimed_task(str(status["task_id"]))
             with self._lock:
                 state = self._status.get("state")
-                if state not in {"claimed", "stopped", "error"}:
+                if state not in {"blocked_in_progress", "claimed", "stopped", "error"}:
                     self._status = {**self._status, "state": "finished"}
         except Exception as exc:
             self._last_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
@@ -423,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run the Feather Auto dashboard server.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
 
     OUTPUTS.mkdir(parents=True, exist_ok=True)

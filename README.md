@@ -56,7 +56,7 @@ The setup script:
 - Creates `.venv` in the repo.
 - Installs the package and dependencies with `pip install -e .`.
 - Adds `feather` and `Start-Feather` commands to your PowerShell profile.
-- Starts the dashboard and opens `http://127.0.0.1:8765/dashboard.html`.
+- Starts the dashboard and opens `http://127.0.0.1:8000/dashboard.html`.
 
 After setup, open a new PowerShell and start the dashboard with:
 
@@ -97,7 +97,7 @@ https://feather.openai.com/api/v2/tasks/search
 6. Start the local dashboard:
 
 ```powershell
-python -m feather_auto.dashboard_server --port 8765
+python -m feather_auto.dashboard_server --port 8000
 ```
 
 On startup, the dashboard checks the configured Git upstream for new commits. If
@@ -108,7 +108,7 @@ changes are present, it skips the pull and starts with the current files.
 7. Open:
 
 ```text
-http://127.0.0.1:8765/dashboard.html
+http://127.0.0.1:8000/dashboard.html
 ```
 
 8. Paste the copied cURL into the dashboard, choose settings, then start the
@@ -169,6 +169,10 @@ If a claim loses the race, for example Feather returns `NOT_FOUND`, the monitor
 logs `CLAIM_FAILED_CONTINUING` and continues polling.
 
 ## Dashboard State Model
+Before claim mode starts and immediately before each claim attempt, the monitor
+checks whether the current account already has an `in_progress` task in the
+campaign. If one exists, it stops without claiming and shows a blocking alert.
+
 
 The dashboard server owns a background worker thread. It does not start a
 separate monitor subprocess and does not depend on a monitor PID file.
@@ -180,6 +184,8 @@ Main states:
 - `monitoring`: worker is active
 - `found`: a matching task was found
 - `claim_failed_continuing`: claim attempt failed, monitor continues
+- `blocked_in_progress`: claim mode stopped because this account already has an
+  in-progress task
 - `claimed`: a task was successfully claimed and the worker stopped
 - `error`: unrecoverable error
 
@@ -300,10 +306,11 @@ Get-Content .\outputs\feather-auto.log -Wait -Tail 80
 
 When claim mode is enabled, the monitor:
 
-1. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
-2. Queries `whoami`.
-3. Searches for the task again.
-4. Prints a `VERIFY` line with expected user id/email, assignment fields, and
+1. Queries `whoami`.
+2. Checks for an existing `in_progress` task assigned to the current account.
+3. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
+4. Searches for the task again.
+5. Prints a `VERIFY` line with expected user id/email, assignment fields, and
    workflow status.
 
 The monitor treats the claim as successful when Feather confirms the task is in
@@ -336,13 +343,13 @@ Do not commit or share these files.
 Make sure the server is running:
 
 ```powershell
-python -m feather_auto.dashboard_server --port 8765
+python -m feather_auto.dashboard_server --port 8000
 ```
 
 Then open:
 
 ```text
-http://127.0.0.1:8765/dashboard.html
+http://127.0.0.1:8000/dashboard.html
 ```
 
 ### Stop does not immediately stop

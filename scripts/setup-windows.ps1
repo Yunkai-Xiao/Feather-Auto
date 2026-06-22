@@ -2,7 +2,7 @@ param(
     [switch]$SkipPythonInstall,
     [switch]$NoStart,
     [switch]$NoProfileCommand,
-    [int]$Port = 8765
+    [int]$Port = 8000
 )
 
 $ErrorActionPreference = "Stop"

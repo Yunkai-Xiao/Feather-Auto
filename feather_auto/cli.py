@@ -454,6 +454,79 @@ def verify_task_assignment(headers: dict[str, str], campaign_id: str, page_size:
     return None
 
 
+def is_current_user_task(task: dict[str, Any], user: dict[str, Any]) -> bool:
+    user_id = user.get("id")
+    email = user.get("email")
+    return bool(
+        (user_id and task.get("claimed_by_user_id") == user_id)
+        or (user_id and task.get("active_user_id") == user_id)
+        or (email and task.get("claimed_by_user_email") == email)
+        or (email and task.get("active_user_email") == email)
+    )
+
+
+def find_current_in_progress_task(
+    headers: dict[str, str],
+    campaign_id: str,
+    page_size: int,
+    user: dict[str, Any],
+) -> dict[str, Any] | None:
+    payload = default_search_payload(campaign_id, max(page_size, 50))
+    payload["workflow_statuses"] = ["in_progress"]
+    payload["exclude_declined"] = False
+    data = poll_once(headers, payload)
+    for task in data.get("tasks", []):
+        if is_current_user_task(task, user):
+            return task
+    return None
+
+
+def block_in_progress_status(
+    task: dict[str, Any],
+    campaign_id: str,
+    claim: bool,
+    batch_suffix: str | None,
+    tag_count_filter: dict[str, int] | None,
+) -> dict[str, Any]:
+    task_id = str(task.get("id") or "")
+    return {
+        "state": "blocked_in_progress",
+        "phase": "stopped",
+        "campaign_id": campaign_id,
+        "claim": claim,
+        "batch_suffix": batch_suffix,
+        "tag_count_filter": tag_count_filter,
+        "task_id": task_id,
+        "title": task_log_title(task),
+        "batch": batch_summary(task),
+        "tag_count": task_tag_count(task),
+        "blocking_reason": "An in-progress task is already assigned to this account. Claiming stopped.",
+        "in_progress_task_id": task_id,
+        "in_progress_task_url": task_url(task_id) if task_id else None,
+        "in_progress_title": task_log_title(task),
+    }
+
+
+def stop_for_in_progress_task(
+    task: dict[str, Any],
+    campaign_id: str,
+    claim: bool,
+    batch_suffix: str | None,
+    tag_count_filter: dict[str, int] | None,
+    emit: Emit,
+    update_status: Callable[..., None],
+) -> int:
+    status = block_in_progress_status(task, campaign_id, claim, batch_suffix, tag_count_filter)
+    task_id = status.get("in_progress_task_id") or "unknown"
+    title = status.get("in_progress_title") or "(untitled)"
+    emit("\a", end="", flush=True)
+    emit("!!! IN_PROGRESS_TASK_BLOCKING_CLAIM !!!", flush=True)
+    emit(f"IN_PROGRESS_TASK {task_id}: {title}", flush=True)
+    emit("CLAIM_STOPPED existing in-progress task must be finished or released first", flush=True)
+    update_status(**status)
+    return 0
+
+
 def save_found(path: str | None, task: dict[str, Any], response: dict[str, Any]) -> None:
     if not path:
         return
@@ -615,6 +688,19 @@ def run_monitor(
     payload["include_tags"] = True
     campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
     search_headers = build_headers(cookie, config.campaign_id, campaign_url)
+    user = current_user(search_headers) if config.claim else {}
+    if config.claim:
+        in_progress_task = find_current_in_progress_task(search_headers, config.campaign_id, config.page_size, user)
+        if in_progress_task:
+            return stop_for_in_progress_task(
+                in_progress_task,
+                config.campaign_id,
+                config.claim,
+                config.batch_suffix,
+                tag_count_filter,
+                emit,
+                update_status,
+            )
 
     allowed_batch_refs = batch_refs_for_suffix(search_headers, config.campaign_id, config.batch_suffix)
     update_status(
@@ -701,6 +787,18 @@ def run_monitor(
             summary = batch_summary(task)
             if summary:
                 emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
+            if config.claim:
+                in_progress_task = find_current_in_progress_task(search_headers, config.campaign_id, config.page_size, user)
+                if in_progress_task:
+                    return stop_for_in_progress_task(
+                        in_progress_task,
+                        config.campaign_id,
+                        config.claim,
+                        config.batch_suffix,
+                        tag_count_filter,
+                        emit,
+                        update_status,
+                    )
             update_status(
                 state="found",
                 campaign_id=config.campaign_id,
