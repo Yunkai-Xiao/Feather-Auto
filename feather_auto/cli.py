@@ -263,6 +263,10 @@ def fetch_batch_refs(headers: dict[str, str], campaign_id: str) -> list[dict[str
     return data.get("task_batch_refs", []) if isinstance(data, dict) else []
 
 
+def active_batch_ref(ref: dict[str, Any]) -> bool:
+    return ref.get("status") == "active" and not ref.get("is_archived")
+
+
 def batch_refs_for_suffix(headers: dict[str, str], campaign_id: str, suffix: str | None) -> list[dict[str, Any]]:
     if not suffix:
         return []
@@ -272,9 +276,91 @@ def batch_refs_for_suffix(headers: dict[str, str], campaign_id: str, suffix: str
         ref
         for ref in refs
         if str(ref.get("name", "")).lower().endswith(suffix)
-        and ref.get("status") == "active"
-        and not ref.get("is_archived")
+        and active_batch_ref(ref)
     ]
+
+
+def batch_refs_for_filters(
+    headers: dict[str, str],
+    campaign_id: str,
+    batch_name: str | None,
+    batch_suffix: str | None,
+) -> list[dict[str, Any]]:
+    if not batch_name and not batch_suffix:
+        return []
+
+    refs = [ref for ref in fetch_batch_refs(headers, campaign_id) if active_batch_ref(ref)]
+    if batch_name:
+        needle = batch_name.lower()
+        refs = [ref for ref in refs if needle in str(ref.get("name", "")).lower()]
+    if batch_suffix:
+        suffix = batch_suffix.lower()
+        refs = [ref for ref in refs if str(ref.get("name", "")).lower().endswith(suffix)]
+    return refs
+
+
+def unique_batch_ids(refs: list[dict[str, Any]]) -> list[str]:
+    batch_ids: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        batch_id = str(ref.get("id") or "").strip()
+        if batch_id and batch_id not in seen:
+            batch_ids.append(batch_id)
+            seen.add(batch_id)
+    return batch_ids
+
+
+def batch_id_from_payload(payload: dict[str, Any]) -> str | None:
+    batch_id = str(payload.get("task_batch_id") or "").strip()
+    return batch_id or None
+
+
+def search_batch_ids(
+    payload: dict[str, Any],
+    batch_id: str | None,
+    batch_name: str | None,
+    batch_suffix: str | None,
+    allowed_batch_refs: list[dict[str, Any]],
+) -> list[str] | None:
+    if batch_id:
+        return [batch_id]
+    if batch_name or batch_suffix:
+        return unique_batch_ids(allowed_batch_refs)
+    copied_batch_id = batch_id_from_payload(payload)
+    return [copied_batch_id] if copied_batch_id else None
+
+
+def batch_search_payloads(
+    payload: dict[str, Any],
+    batch_ids: list[str] | None,
+) -> list[tuple[str | None, dict[str, Any]]]:
+    if batch_ids is None:
+        batch_id = batch_id_from_payload(payload)
+        return [(batch_id, dict(payload))]
+
+    payloads: list[tuple[str | None, dict[str, Any]]] = []
+    for batch_id in batch_ids:
+        batch_payload = dict(payload)
+        batch_payload["task_batch_id"] = batch_id
+        payloads.append((batch_id, batch_payload))
+    return payloads
+
+
+def resolve_batch_searches(
+    headers: dict[str, str],
+    campaign_id: str,
+    payload: dict[str, Any],
+    batch_id: str | None,
+    batch_name: str | None,
+    batch_suffix: str | None,
+) -> tuple[list[dict[str, Any]], list[tuple[str | None, dict[str, Any]]]]:
+    allowed_batch_refs = batch_refs_for_filters(headers, campaign_id, batch_name, batch_suffix)
+    batch_ids = search_batch_ids(payload, batch_id, batch_name, batch_suffix, allowed_batch_refs)
+    return allowed_batch_refs, batch_search_payloads(payload, batch_ids)
+
+
+def batch_search_id_list(search_payloads: list[tuple[str | None, dict[str, Any]]]) -> list[str]:
+    return [str(batch_id) for batch_id, _payload in search_payloads if batch_id]
 
 
 def task_matches_filters(
@@ -309,7 +395,7 @@ def task_matches_filters(
     if batch_id and batch_id not in values:
         return False
 
-    if batch_name:
+    if batch_name and not allowed_batch_refs:
         needle = batch_name.lower()
         if not any(needle in value.lower() for value in values):
             return False
@@ -702,7 +788,37 @@ def run_monitor(
                 update_status,
             )
 
-    allowed_batch_refs = batch_refs_for_suffix(search_headers, config.campaign_id, config.batch_suffix)
+    allowed_batch_refs, search_payloads = resolve_batch_searches(
+        search_headers,
+        config.campaign_id,
+        payload,
+        config.batch_id,
+        config.batch_name,
+        config.batch_suffix,
+    )
+    current_batch_search_ids = batch_search_id_list(search_payloads)
+
+    def emit_batch_targets(refs: list[dict[str, Any]], searches: list[tuple[str | None, dict[str, Any]]]) -> None:
+        search_ids = batch_search_id_list(searches)
+        if config.batch_name or config.batch_suffix:
+            filters = []
+            if config.batch_name:
+                filters.append(f"name={config.batch_name}")
+            if config.batch_suffix:
+                filters.append(f"suffix={config.batch_suffix}")
+            emit(
+                f"batch_filter {' '.join(filters)} active_matches={len(refs)} "
+                f"server_batch_filters={len(search_ids)}",
+                flush=True,
+            )
+            for ref in refs:
+                emit(f"BATCH_REF {ref.get('id')} {ref.get('name')}", flush=True)
+        elif config.batch_id:
+            emit(f"batch_id={config.batch_id} server_batch_filter=enabled", flush=True)
+        elif search_ids:
+            emit(f"task_batch_id={search_ids[0]} server_batch_filter=from_curl", flush=True)
+
+    emit_batch_targets(allowed_batch_refs, search_payloads)
     update_status(
         state="monitoring",
         phase="ready",
@@ -711,17 +827,15 @@ def run_monitor(
         batch_suffix=config.batch_suffix,
         tag_count_filter=tag_count_filter,
         active_batch_matches=len(allowed_batch_refs),
+        server_batch_filters=current_batch_search_ids,
     )
-    if config.batch_suffix:
-        emit(f"batch_suffix={config.batch_suffix} active_matches={len(allowed_batch_refs)}", flush=True)
-        for ref in allowed_batch_refs:
-            emit(f"BATCH_REF {ref.get('id')} {ref.get('name')}", flush=True)
     if tag_count_filter is not None:
         min_label = "*" if config.tag_count_min is None else config.tag_count_min
         max_label = "*" if config.tag_count_max is None else config.tag_count_max
         emit(f"tag_count_range={min_label}..{max_label}", flush=True)
 
     seen: set[str] = set()
+    last_batch_signature = tuple(current_batch_search_ids)
     while True:
         if stop_requested():
             emit("STOPPED", flush=True)
@@ -732,13 +846,40 @@ def run_monitor(
                 batch_suffix=config.batch_suffix,
                 tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
+                server_batch_filters=current_batch_search_ids,
             )
             return 0
 
         now = time.strftime("%H:%M:%S")
-        data = poll_once(search_headers, payload)
-        tasks = data.get("tasks", [])
-        emit(f"[{now}] tasks={len(tasks)}", flush=True)
+        if config.batch_name or config.batch_suffix:
+            allowed_batch_refs, search_payloads = resolve_batch_searches(
+                search_headers,
+                config.campaign_id,
+                payload,
+                config.batch_id,
+                config.batch_name,
+                config.batch_suffix,
+            )
+            current_batch_search_ids = batch_search_id_list(search_payloads)
+            batch_signature = tuple(current_batch_search_ids)
+            if batch_signature != last_batch_signature:
+                emit_batch_targets(allowed_batch_refs, search_payloads)
+                last_batch_signature = batch_signature
+
+        tasks: list[dict[str, Any]] = []
+        response_by_task_id: dict[str, dict[str, Any]] = {}
+        seen_poll_task_ids: set[str] = set()
+        for _batch_id, search_payload in search_payloads:
+            data = poll_once(search_headers, search_payload)
+            for task in data.get("tasks", []):
+                task_id = str(task.get("id") or "").strip()
+                if task_id:
+                    if task_id in seen_poll_task_ids:
+                        continue
+                    seen_poll_task_ids.add(task_id)
+                    response_by_task_id[task_id] = data
+                tasks.append(task)
+        emit(f"[{now}] tasks={len(tasks)} batch_searches={len(search_payloads)}", flush=True)
         if tasks:
             emit_task_tag_counts(tasks, emit)
         update_status(
@@ -749,6 +890,7 @@ def run_monitor(
             batch_suffix=config.batch_suffix,
             tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
+            server_batch_filters=current_batch_search_ids,
             unclaimed_count=len(tasks),
             last_poll=now,
         )
@@ -811,7 +953,7 @@ def run_monitor(
             )
 
             save_path = config.save or None
-            save_found(save_path, task, data)
+            save_found(save_path, task, response_by_task_id.get(str(task_id), {"tasks": tasks}))
             if save_path:
                 emit(f"SAVED {save_path}", flush=True)
 
@@ -873,6 +1015,7 @@ def run_monitor(
                 batch_suffix=config.batch_suffix,
                 tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
+                server_batch_filters=current_batch_search_ids,
             )
             return 0
 
@@ -888,6 +1031,7 @@ def run_monitor(
             batch_suffix=config.batch_suffix,
             tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
+            server_batch_filters=current_batch_search_ids,
             unclaimed_count=len(tasks),
             next_sleep_seconds=round(delay, 2),
             last_poll=now,
@@ -902,6 +1046,7 @@ def run_monitor(
                     batch_suffix=config.batch_suffix,
                     tag_count_filter=tag_count_filter,
                     active_batch_matches=len(allowed_batch_refs),
+                    server_batch_filters=current_batch_search_ids,
                     unclaimed_count=len(tasks),
                     last_poll=now,
                 )
