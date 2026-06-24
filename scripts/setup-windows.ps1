@@ -95,20 +95,11 @@ function Install-PythonWithWinget {
 }
 
 function Install-ProfileCommand {
-    $profilePath = $PROFILE.CurrentUserAllHosts
-    $profileDir = Split-Path -Parent $profilePath
-    New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
-
     $markerStart = "# >>> Feather Auto bootstrap >>>"
     $markerEnd = "# <<< Feather Auto bootstrap <<<"
     $escapedStart = [regex]::Escape($markerStart)
     $escapedEnd = [regex]::Escape($markerEnd)
     $pattern = "(?s)\r?\n?$escapedStart.*?$escapedEnd\r?\n?"
-    $existing = ""
-    if (Test-Path $profilePath) {
-        $existing = Get-Content $profilePath -Raw
-        $existing = [regex]::Replace($existing, $pattern, "")
-    }
 
     $block = @"
 $markerStart
@@ -121,14 +112,26 @@ function feather {
 $markerEnd
 "@
 
-    $next = $existing.TrimEnd()
-    if ($next) {
-        $next += "`r`n`r`n"
+    $profilePaths = @($PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost) | Select-Object -Unique
+    foreach ($profilePath in $profilePaths) {
+        $profileDir = Split-Path -Parent $profilePath
+        New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+
+        $existing = ""
+        if (Test-Path $profilePath) {
+            $existing = Get-Content $profilePath -Raw
+            $existing = [regex]::Replace($existing, $pattern, "")
+        }
+
+        $next = $existing.TrimEnd()
+        if ($next) {
+            $next += "`r`n`r`n"
+        }
+        $next += $block + "`r`n"
+        Set-Content -Path $profilePath -Value $next -Encoding UTF8
+        Write-Host "Profile: $profilePath"
     }
-    $next += $block + "`r`n"
-    Set-Content -Path $profilePath -Value $next -Encoding UTF8
     Write-Host "Installed PowerShell commands: feather, Start-Feather" -ForegroundColor Green
-    Write-Host "Profile: $profilePath"
 }
 
 Write-Host "Feather Auto setup" -ForegroundColor Cyan
@@ -155,6 +158,15 @@ if (-not (Test-Path $venvPython)) {
 
 Write-Host "Installing Python dependencies..." -ForegroundColor Cyan
 Invoke-VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip")
+Write-Host "Installing PaddlePaddle CPU runtime..." -ForegroundColor Cyan
+Invoke-VenvPython -Arguments @(
+    "-m",
+    "pip",
+    "install",
+    "paddlepaddle==3.2.0",
+    "-i",
+    "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+)
 Invoke-VenvPython -Arguments @("-m", "pip", "install", "-e", $repoRoot)
 
 Write-Host "Checking installed package..." -ForegroundColor Cyan

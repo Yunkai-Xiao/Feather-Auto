@@ -507,6 +507,20 @@
         min-height: 0;
       }
 
+      .review-body {
+        padding: 0;
+      }
+
+      .review-output {
+        min-height: 360px;
+        max-height: 520px;
+        overflow: auto;
+        border-radius: 0 0 var(--radius) var(--radius);
+        background: #fbfcfe;
+        color: var(--ink);
+        padding: 12px;
+      }
+
       .log-body {
         padding: 0;
       }
@@ -606,10 +620,24 @@
             </div>
             <div class="panel-body">
               <div class="field">
+                <label for="reviewMode">Mode</label>
+                <select id="reviewMode">
+                  <option value="aesthetic_ranking">Aesthetic Ranking</option>
+                  <option value="content_grading">Content Grading</option>
+                </select>
+              </div>
+
+              <div class="field">
                 <label for="campaignId">Campaign</label>
                 <select id="campaignId">
-                  <option value="929712fc-fa2a-45bc-94df-2ae6d445b2ca">Raw creation campaign</option>
+                  <option value="929712fc-fa2a-45bc-94df-2ae6d445b2ca">Aesthetic Ranking campaign</option>
+                  <option value="c2978c67-7bc5-4fde-b4f5-330d0e001a35">Content Grading campaign</option>
                 </select>
+              </div>
+
+              <div class="field" id="customCampaignField" hidden>
+                <label for="customCampaignId">Content Grading campaign id</label>
+                <input id="customCampaignId" placeholder="Paste campaign UUID" />
               </div>
 
               <div class="field">
@@ -642,7 +670,7 @@
               <div class="toggle-list">
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
                 <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
-                <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" checked /></label>
+                <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
               </div>
 
               <div class="action-grid">
@@ -753,6 +781,16 @@
             </div>
           </section>
 
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Review output</h2>
+              <span class="small" id="reviewOutputMeta">-</span>
+            </div>
+            <div class="review-body">
+              <pre class="review-output" id="reviewOutput">Waiting for auto review output...</pre>
+            </div>
+          </section>
+
           <section class="panel log-panel">
             <div class="panel-header">
               <h2 class="panel-title">Event log</h2>
@@ -817,6 +855,11 @@
         return body;
       }
 
+      function unixTimeText(value) {
+        if (!value) return "";
+        return new Date(Number(value) * 1000).toLocaleTimeString();
+      }
+
       function ageText(iso) {
         if (!iso) return "-";
         const then = new Date(iso.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
@@ -843,12 +886,151 @@
         if (nextValue) select.value = nextValue;
       }
 
+      function renderReviewModes(modes, selectedId) {
+        const select = $("reviewMode");
+        const items = Array.isArray(modes) && modes.length ? modes : [];
+        const signature = JSON.stringify(items.map((mode) => [mode.id, mode.name]));
+        const current = select.value;
+        if (select.dataset.signature !== signature) {
+          select.innerHTML = "";
+          for (const mode of items) {
+            const option = document.createElement("option");
+            option.value = mode.id;
+            option.textContent = mode.name || mode.id;
+            select.appendChild(option);
+          }
+          select.dataset.signature = signature;
+        }
+        const nextValue = current || selectedId || items[0]?.id || "";
+        if (nextValue) select.value = nextValue;
+      }
+
+      function currentModeConfig() {
+        const modes = latest?.review_modes || [];
+        return modes.find((mode) => mode.id === $("reviewMode").value) || modes[0] || null;
+      }
+
+      function effectiveCampaignId() {
+        const mode = currentModeConfig();
+        if (mode?.custom_campaign && $("customCampaignId").value.trim()) {
+          return $("customCampaignId").value.trim();
+        }
+        return $("campaignId").value.trim();
+      }
+
+      function applyReviewModeDefaults() {
+        const mode = currentModeConfig();
+        if (!mode) return;
+        $("customCampaignField").hidden = !mode.custom_campaign;
+        if (mode.campaign_id && !$("campaignId").value) {
+          $("campaignId").value = mode.campaign_id;
+        }
+        if (mode.campaign_id && !mode.custom_campaign) {
+          $("campaignId").value = mode.campaign_id;
+        }
+        $("batchSuffix").value = mode.batch_suffix || "";
+        $("autoReview").checked = Boolean(mode.auto_review);
+        currentCurlValidation();
+      }
+
       function modeText(status) {
         const claim = Boolean(status.claim ?? $("claim").checked);
         const open = $("openTask").checked;
         if (claim) return "claim";
         if (open) return "open";
         return "observe";
+      }
+
+      function reviewText(status) {
+        const review = status.review;
+        if (!review) return status.auto_review ? "enabled" : "off";
+        const parts = [review.state || "-"];
+        if (review.stage) parts.push(review.stage);
+        if (review.completed != null && review.total != null) parts.push(`${review.completed}/${review.total}`);
+        if (review.current_deck) parts.push(review.current_deck);
+        if (review.current_slide) parts.push(`slide ${review.current_slide}`);
+        if (review.review_speed) parts.push(`speed ${review.review_speed}`);
+        if (review.comments_per_deck) parts.push(`${review.comments_per_deck} comments/deck`);
+        if (review.ocr_backend) parts.push(`ocr ${review.ocr_backend}`);
+        if (review.ocr_workers) parts.push(`ocr workers ${review.ocr_workers}`);
+        if (review.codex_workers) parts.push(`workers ${review.codex_workers}`);
+        if (review.elapsed_seconds != null) parts.push(`${review.elapsed_seconds}s elapsed`);
+        if (review.deck_comment_elapsed_seconds != null) parts.push(`${review.deck_comment_elapsed_seconds}s deck write`);
+        if (review.latest_slide_comment_md) parts.push(review.latest_slide_comment_md);
+        else if (review.latest_deck_comment_md) parts.push(review.latest_deck_comment_md);
+        else if (review.content_grading_comments_md) parts.push(review.content_grading_comments_md);
+        else if (review.output_dir) parts.push(review.output_dir);
+        return parts.join(" ");
+      }
+
+      function reviewProgressMarkdown(status, payload) {
+        const review = status.review || {};
+        const taskId = review.task_id || status.task_id || payload.task_id || "-";
+        const lines = [
+          "# Content Grading Comments",
+          "",
+          `Review is running for task \`${taskId}\`.`,
+          "",
+          "## Live Progress",
+          `- State: ${review.state || "-"}`,
+        ];
+        if (review.stage) lines.push(`- Stage: ${review.stage}`);
+        if (review.completed != null && review.total != null) {
+          lines.push(`- Progress: ${review.completed}/${review.total}`);
+        }
+        if (review.current_deck) lines.push(`- Current deck: ${review.current_deck}`);
+        if (review.current_slide) lines.push(`- Current slide: ${review.current_slide}`);
+        if (review.review_speed) lines.push(`- Review speed: ${review.review_speed}`);
+        if (review.comments_per_deck) lines.push(`- Comments per deck: ${review.comments_per_deck}`);
+        if (review.ocr_backend) lines.push(`- OCR backend: ${review.ocr_backend}`);
+        if (review.ocr_workers) lines.push(`- OCR workers: ${review.ocr_workers}`);
+        if (review.codex_workers) lines.push(`- Codex workers: ${review.codex_workers}`);
+        if (review.elapsed_seconds != null) lines.push(`- Elapsed: ${review.elapsed_seconds}s`);
+        if (review.deck_comment_elapsed_seconds != null) lines.push(`- Latest deck write time: ${review.deck_comment_elapsed_seconds}s`);
+        const deckCount = Array.isArray(payload.deck_files) ? payload.deck_files.length : 0;
+        const slideCount = Array.isArray(payload.slide_files) ? payload.slide_files.length : 0;
+        lines.push(`- Completed slide draft files: ${slideCount}`);
+        lines.push(`- Completed deck comment files: ${deckCount}`);
+        lines.push("");
+        lines.push("Slide drafts appear first; deck-level comments replace them as each deck is merged.");
+        return lines.join("\n");
+      }
+
+      async function refreshReviewOutput(status) {
+        const taskId = status.review?.task_id || status.task_id;
+        if (!taskId) {
+          $("reviewOutput").textContent = "Waiting for a claimed task...";
+          setText("reviewOutputMeta", "no task");
+          return;
+        }
+
+        try {
+          const payload = await api(`/api/review-output?task_id=${encodeURIComponent(taskId)}`);
+          const output = $("reviewOutput");
+          const wasNearBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 24;
+          const deckCount = Array.isArray(payload.deck_files) ? payload.deck_files.length : 0;
+          const slideCount = Array.isArray(payload.slide_files) ? payload.slide_files.length : 0;
+          const combined = payload.combined_markdown || "";
+          const isPlaceholder = combined.includes("Review is running for task") && deckCount === 0;
+          const text = isPlaceholder && status.review
+            ? reviewProgressMarkdown(status, payload)
+            : (combined || reviewProgressMarkdown(status, payload));
+          if (output.textContent !== text) {
+            output.textContent = text;
+            if (wasNearBottom) output.scrollTop = output.scrollHeight;
+          }
+          const updated = unixTimeText(payload.combined_updated_at);
+          const meta = [
+            updated ? `updated ${updated}` : "waiting",
+            `${slideCount} slide draft${slideCount === 1 ? "" : "s"}`,
+            `${deckCount} deck file${deckCount === 1 ? "" : "s"}`,
+            payload.combined_path || "",
+          ].filter(Boolean).join(" | ");
+          setText("reviewOutputMeta", meta);
+        } catch (error) {
+          $("reviewOutput").textContent = `Unable to load review output: ${error.message}`;
+          setText("reviewOutputMeta", "error");
+        }
       }
 
       function batchText(batch) {
@@ -909,8 +1091,8 @@
           clearInterval(titleFlashTimer);
           titleFlashTimer = null;
         }
-        document.title = originalTitle;
         delete document.body.dataset.flashTitle;
+        document.title = originalTitle;
       }
 
       function showTimerAlert(status) {
@@ -991,7 +1173,7 @@
 
       function validateCurlText(text) {
         const trimmed = text.trim();
-        const campaignId = $("campaignId").value.trim();
+        const campaignId = effectiveCampaignId();
         const checks = [];
         const add = (ok, pass, fail) => checks.push({ ok, text: ok ? pass : fail });
 
@@ -1096,7 +1278,9 @@
         const state = status.state || (running ? "running" : "stopped");
         const phase = status.phase || "-";
 
+        renderReviewModes(latest.review_modes, status.review_mode);
         renderCampaigns(latest.campaigns, status.campaign_id);
+        $("customCampaignField").hidden = !currentModeConfig()?.custom_campaign;
 
         setText("running", running ? `running (${latest.worker_id || "worker"})` : state);
         setText("state", state);
@@ -1106,7 +1290,7 @@
         setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
         setText("batchMatches", status.active_batch_matches);
         setText("batchSuffixView", status.batch_suffix || $("batchSuffix").value || "-");
-        setText("mode", modeText(status));
+        setText("mode", `${modeText(status)} / ${status.review_mode_name || currentModeConfig()?.name || $("reviewMode").value}`);
         setText("updated", ageText(status.updated_at));
         setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
         setText("curlSaved", latest.curl_saved ? "saved" : "empty");
@@ -1116,7 +1300,8 @@
         setText("taskBatch", batchText(status.batch));
         setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
-        setText("reviewState", status.review ? `${status.review.state || "-"} ${status.review.output_dir || ""}`.trim() : (status.auto_review ? "enabled" : "off"));
+        setText("reviewState", reviewText(status));
+        await refreshReviewOutput(status);
 
         $("dot").className = `dot ${state}`;
         $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status} | ${latest.paths.review_output || ""}` : "";
@@ -1135,7 +1320,9 @@
       function configFromForm() {
         return {
           curlText: $("curlText").value,
-          campaignId: $("campaignId").value.trim(),
+          reviewMode: $("reviewMode").value,
+          campaignId: effectiveCampaignId(),
+          customCampaignId: $("customCampaignId").value.trim(),
           batchSuffix: $("batchSuffix").value.trim(),
           tagCountMin: $("tagCountMin").value.trim(),
           tagCountMax: $("tagCountMax").value.trim(),
@@ -1213,6 +1400,8 @@
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
       $("curlText").addEventListener("input", currentCurlValidation);
       $("campaignId").addEventListener("change", currentCurlValidation);
+      $("customCampaignId").addEventListener("input", currentCurlValidation);
+      $("reviewMode").addEventListener("change", applyReviewModeDefaults);
       $("ackTimerAlert").addEventListener("click", () => {
         const taskId = latest?.status?.task_id || "unknown";
         localStorage.setItem(claimAlertKey(taskId), "1");

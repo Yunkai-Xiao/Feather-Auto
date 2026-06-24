@@ -1,5 +1,6 @@
 param(
     [switch]$NoOpen,
+    [switch]$ForceRestart,
     [int]$Port = 8000
 )
 
@@ -9,6 +10,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $url = "http://127.0.0.1:$Port/dashboard.html"
+$stateUrl = "http://127.0.0.1:$Port/api/state"
 
 function Test-FeatherPort {
     $client = New-Object System.Net.Sockets.TcpClient
@@ -26,11 +28,27 @@ function Test-FeatherPort {
     }
 }
 
+function Test-PythonExecutable {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return $false
+    }
+    try {
+        & $Path -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" | Out-Null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Find-LauncherPython {
-    if (Test-Path $venvPython) {
+    if (Test-PythonExecutable $venvPython) {
         return $venvPython
     }
-    $command = Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    $command = Get-Command python.exe -ErrorAction SilentlyContinue | Where-Object {
+        Test-PythonExecutable $_.Source
+    } | Select-Object -First 1
     if ($command) {
         return $command.Source
     }
@@ -46,7 +64,75 @@ function Test-Dashboard {
     }
 }
 
-if (-not (Test-FeatherPort)) {
+function Get-DashboardState {
+    try {
+        return Invoke-RestMethod -Uri $stateUrl -TimeoutSec 5
+    } catch {
+        return $null
+    }
+}
+
+function Test-DashboardRuntime {
+    $state = Get-DashboardState
+    if ($null -eq $state -or $null -eq $state.runtime) {
+        Write-Warning "Existing dashboard did not expose runtime health. Restarting it."
+        return $false
+    }
+
+    $runtime = $state.runtime
+    $runtimeRoot = [string]$runtime.repo_root
+    $rootMatches = [string]::Equals($runtimeRoot.TrimEnd('\'), $repoRoot.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
+    $paddleReady = $runtime.paddleocr_available -eq $true
+    $venvReady = $runtime.venv_python_exists -eq $true
+
+    if (-not $rootMatches) {
+        Write-Warning "Existing dashboard belongs to a different repo: $runtimeRoot"
+    }
+    if (-not $paddleReady) {
+        Write-Warning "Existing dashboard cannot import PaddleOCR. Restarting with the repo virtualenv."
+    }
+    if (-not $venvReady) {
+        Write-Warning "Repo virtualenv was not found: $venvPython"
+    }
+
+    return $rootMatches -and $paddleReady -and $venvReady
+}
+
+function Get-FeatherPortProcessIds {
+    @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+}
+
+function Stop-FeatherPortProcesses {
+    foreach ($processId in Get-FeatherPortProcessIds) {
+        if ($processId) {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$portOpen = Test-FeatherPort
+$dashboardReady = Test-Dashboard
+
+if ($ForceRestart -and $portOpen) {
+    Stop-FeatherPortProcesses
+    Start-Sleep -Milliseconds 800
+    $portOpen = Test-FeatherPort
+    $dashboardReady = Test-Dashboard
+}
+
+if ($dashboardReady -and -not (Test-DashboardRuntime)) {
+    Stop-FeatherPortProcesses
+    Start-Sleep -Milliseconds 800
+    $portOpen = Test-FeatherPort
+    $dashboardReady = Test-Dashboard
+}
+
+if ($portOpen -and -not $dashboardReady) {
+    throw "Port $Port is already in use by another service. Stop that process or choose another port."
+}
+
+if (-not $dashboardReady) {
     $python = Find-LauncherPython
     $outputDir = Join-Path $repoRoot "outputs"
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
@@ -79,6 +165,10 @@ if (-not (Test-FeatherPort)) {
 
     if (-not (Test-Dashboard)) {
         throw "Feather dashboard did not start. Check $stderr"
+    }
+
+    if (-not (Test-DashboardRuntime)) {
+        throw "Feather dashboard started, but runtime health failed. Check $stderr"
     }
 
     Write-Host "Started Feather dashboard (PID $($process.Id))." -ForegroundColor Green

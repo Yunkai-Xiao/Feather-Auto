@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import importlib.util
 import json
 import os
 import subprocess
@@ -11,7 +13,7 @@ from argparse import Namespace
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .cli import MonitorConfig, run_monitor, tag_count_filter_payload
 from .review_task_slides import run_review_pipeline
@@ -27,12 +29,37 @@ STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
 REVIEW_OUTPUT_ROOT = OUTPUTS / "content_review"
-DEFAULT_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
+AESTHETIC_RANKING_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
+CONTENT_GRADING_CAMPAIGN_ID = "c2978c67-7bc5-4fde-b4f5-330d0e001a35"
+DEFAULT_CAMPAIGN_ID = AESTHETIC_RANKING_CAMPAIGN_ID
+DEFAULT_REVIEW_MODE = "aesthetic_ranking"
 CAMPAIGNS = [
     {
-        "id": DEFAULT_CAMPAIGN_ID,
-        "name": "Raw creation campaign",
-    }
+        "id": AESTHETIC_RANKING_CAMPAIGN_ID,
+        "name": "Aesthetic Ranking campaign",
+    },
+    {
+        "id": CONTENT_GRADING_CAMPAIGN_ID,
+        "name": "Content Grading campaign",
+    },
+]
+REVIEW_MODES = [
+    {
+        "id": "aesthetic_ranking",
+        "name": "Aesthetic Ranking",
+        "campaign_id": AESTHETIC_RANKING_CAMPAIGN_ID,
+        "batch_suffix": "-raw-creation",
+        "auto_review": False,
+        "custom_campaign": False,
+    },
+    {
+        "id": "content_grading",
+        "name": "Content Grading",
+        "campaign_id": CONTENT_GRADING_CAMPAIGN_ID,
+        "batch_suffix": "",
+        "auto_review": True,
+        "custom_campaign": False,
+    },
 ]
 
 
@@ -41,6 +68,13 @@ def campaign_name(campaign_id: str) -> str:
         if campaign["id"] == campaign_id:
             return campaign["name"]
     return campaign_id
+
+
+def review_mode_config(review_mode: str) -> dict[str, Any]:
+    for mode in REVIEW_MODES:
+        if mode["id"] == review_mode:
+            return mode
+    return REVIEW_MODES[0]
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -57,6 +91,11 @@ def write_json(handler: SimpleHTTPRequestHandler, status: int, payload: dict[str
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def read_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
@@ -81,6 +120,90 @@ def tail(path: Path, max_lines: int = 260) -> str:
     if not text:
         return ""
     return "\n".join(text.splitlines()[-max_lines:])
+
+
+def safe_task_id(value: str) -> str:
+    task_id = value.strip()
+    if not task_id or any(not (ch.isalnum() or ch in {"-", "_"}) for ch in task_id):
+        raise ValueError("Invalid task id.")
+    return task_id
+
+
+def dashboard_runtime() -> dict[str, Any]:
+    paddle_spec = importlib.util.find_spec("paddleocr")
+    paddle_version = None
+    if paddle_spec:
+        try:
+            paddle_version = importlib.metadata.version("paddleocr")
+        except importlib.metadata.PackageNotFoundError:
+            paddle_version = "unknown"
+    venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
+    return {
+        "python_executable": sys.executable,
+        "sys_prefix": sys.prefix,
+        "base_prefix": getattr(sys, "base_prefix", ""),
+        "cwd": str(Path.cwd()),
+        "repo_root": str(ROOT),
+        "package_file": __file__,
+        "paddleocr_available": bool(paddle_spec),
+        "paddleocr_version": paddle_version,
+        "venv_python": str(venv_python),
+        "venv_python_exists": venv_python.exists(),
+    }
+
+
+def review_output_payload(task_id: str | None = None) -> dict[str, Any]:
+    if not task_id:
+        status = dashboard_state().get("status") or {}
+        task_id = str((status.get("review") or {}).get("task_id") or status.get("task_id") or "").strip()
+    if not task_id:
+        return {
+            "ok": True,
+            "task_id": None,
+            "output_dir": "",
+            "combined_path": "",
+            "combined_updated_at": None,
+            "combined_markdown": "",
+            "deck_files": [],
+            "slide_files": [],
+        }
+    task_id = safe_task_id(task_id or "")
+    output_dir = REVIEW_OUTPUT_ROOT / task_id
+    combined_path = output_dir / "content_grading_comments.md"
+    deck_dir = output_dir / "deck_reviews"
+    deck_files = []
+    slide_files = []
+    if deck_dir.exists():
+        for path in sorted(deck_dir.glob("*_content_grading_comments.md")):
+            if "_slide_" in path.name:
+                continue
+            deck_files.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "updated_at": path.stat().st_mtime,
+                    "text": read_text(path),
+                }
+            )
+        for path in sorted(deck_dir.glob("*_slide_*_content_grading_comments.md")):
+            slide_files.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "updated_at": path.stat().st_mtime,
+                    "text": read_text(path),
+                }
+            )
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "output_dir": str(output_dir),
+        "combined_path": str(combined_path),
+        "combined_updated_at": combined_path.stat().st_mtime if combined_path.exists() else None,
+        "combined_markdown": read_text(combined_path),
+        "deck_files": deck_files,
+        "slide_files": slide_files,
+    }
 
 
 def clean_runtime_files() -> None:
@@ -179,6 +302,10 @@ class MonitorController:
 
     def _review_claimed_task(self, task_id: str) -> None:
         review_dir = REVIEW_OUTPUT_ROOT / task_id
+        def review_status_callback(payload: dict[str, Any]) -> None:
+            with self._lock:
+                self._status = {**self._status, "review": payload}
+
         try:
             self._emit(f"REVIEW_START {task_id}", flush=True)
             result = run_review_pipeline(
@@ -189,8 +316,17 @@ class MonitorController:
                     conversation_graphql_curl_file=CONVERSATION_GRAPHQL_CURL_FILE,
                     output_dir=review_dir,
                     model=os.environ.get("FEATHER_REVIEW_MODEL", "gpt-5.5"),
+                    llm_backend=os.environ.get("FEATHER_REVIEW_LLM_BACKEND", "auto"),
+                    codex_model=os.environ.get("FEATHER_REVIEW_CODEX_MODEL", os.environ.get("FEATHER_REVIEW_MODEL", "gpt-5.5")),
+                    codex_workers=int(os.environ.get("FEATHER_REVIEW_CODEX_WORKERS", "3")),
+                    ocr_workers=int(os.environ.get("FEATHER_REVIEW_OCR_WORKERS", "4")),
+                    comments_per_deck=int(os.environ.get("FEATHER_REVIEW_COMMENTS_PER_DECK", "6")),
+                    ocr_backend="paddle",
+                    allow_non_paddle_ocr=False,
+                    review_speed=os.environ.get("FEATHER_REVIEW_SPEED", "fast"),
                     skip_download=False,
                     no_llm=False,
+                    status_callback=review_status_callback,
                 )
             )
             self._emit("REVIEW_DONE " + json.dumps(result, ensure_ascii=False), flush=True)
@@ -199,15 +335,23 @@ class MonitorController:
         except BaseException as exc:
             error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             self._emit(f"REVIEW_FAILED {task_id} {error}", flush=True)
+            failure = {
+                "state": "failed",
+                "task_id": task_id,
+                "output_dir": str(review_dir),
+                "error": error,
+            }
+            write_json_file(review_dir / "review_status.json", failure)
+            (review_dir / "content_grading_comments.md").write_text(
+                "# Content Grading Comments\n\n"
+                f"Review failed for task `{task_id}`.\n\n"
+                f"Error: {error}\n",
+                encoding="utf-8",
+            )
             with self._lock:
                 self._status = {
                     **self._status,
-                    "review": {
-                        "state": "failed",
-                        "task_id": task_id,
-                        "output_dir": str(review_dir),
-                        "error": error,
-                    },
+                    "review": failure,
                 }
 
     def _run(self, config: MonitorConfig, stop_event: threading.Event, auto_review: bool) -> None:
@@ -239,8 +383,17 @@ class MonitorController:
         if not CURL_FILE.exists():
             raise ValueError("Paste a Feather Copy-as-cURL before starting.")
 
-        campaign_id = str(config.get("campaignId") or DEFAULT_CAMPAIGN_ID).strip()
-        batch_suffix = str(config.get("batchSuffix") or "-raw-creation").strip()
+        review_mode = str(config.get("reviewMode") or DEFAULT_REVIEW_MODE).strip()
+        mode_config = review_mode_config(review_mode)
+        custom_campaign_id = str(config.get("customCampaignId") or "").strip()
+        campaign_id = str(config.get("campaignId") or "").strip()
+        if mode_config.get("custom_campaign"):
+            campaign_id = custom_campaign_id or campaign_id or str(mode_config.get("campaign_id") or "")
+            if not campaign_id:
+                raise ValueError("Paste a Content Grading campaign id before starting.")
+        else:
+            campaign_id = campaign_id or str(mode_config.get("campaign_id") or DEFAULT_CAMPAIGN_ID)
+        batch_suffix = str(config.get("batchSuffix") if config.get("batchSuffix") is not None else mode_config.get("batch_suffix", "")).strip()
         tag_count_min = optional_int(config.get("tagCountMin"), "Tag count min")
         tag_count_max = optional_int(config.get("tagCountMax"), "Tag count max")
         raw_tag_count = config.get("tagCount")
@@ -252,7 +405,7 @@ class MonitorController:
             raise ValueError("Tag count max must be >= tag count min.")
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
-        auto_review = bool(config.get("autoReview", True))
+        auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
         if interval_min < 1:
             raise ValueError("Interval min must be >= 1 second.")
         if interval_max < interval_min:
@@ -299,6 +452,8 @@ class MonitorController:
             self._last_error = ""
             self._status = {
                 "state": "starting",
+                "review_mode": mode_config["id"],
+                "review_mode_name": mode_config["name"],
                 "campaign_id": campaign_id,
                 "campaign_name": campaign_name(campaign_id),
                 "claim": monitor_config.claim,
@@ -335,6 +490,8 @@ class MonitorController:
             "worker_id": worker_id if running else None,
             "curl_saved": CURL_FILE.exists(),
             "campaigns": CAMPAIGNS,
+            "review_modes": REVIEW_MODES,
+            "runtime": dashboard_runtime(),
             "status": status,
             "log_tail": tail(LOG_FILE),
             "stderr_tail": last_error,
@@ -377,6 +534,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path.startswith("/api/state"):
             write_json(self, 200, dashboard_state())
+            return
+        if self.path.startswith("/api/review-output"):
+            query = parse_qs(urlsplit(self.path).query)
+            task_id = (query.get("task_id") or [""])[0]
+            write_json(self, 200, review_output_payload(task_id or None))
             return
         super().do_GET()
 

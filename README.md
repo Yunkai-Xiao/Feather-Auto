@@ -149,6 +149,89 @@ copied cURL templates and overrides only the values that must change at runtime:
 cookie, referer, campaign id, and task id. It writes the raw GraphQL responses,
 all slide images, `download_results.json`, and a contact sheet for visual review.
 
+To run the full Content Grading helper after a task is claimed, sign in to
+Codex with your ChatGPT subscription or set `OPENAI_API_KEY`, then run:
+
+```powershell
+python -m feather_auto.review_task_slides `
+  --task-id <claimed-task-id> `
+  --curl-file outputs\current_feather_request.curl.txt `
+  --redirect-graphql-curl-file outputs\current_feather_task_or_stagecraft_redirect.curl.txt `
+  --conversation-graphql-curl-file outputs\current_feather_conversation_widget.curl.txt
+```
+
+The review pipeline downloads the slide images, extracts visible slide
+sentences and phrases with local PaddleOCR by default, flags vague or
+AI-slop-like content, and writes reviewer notes with critique plus improvement
+suggestions:
+
+```text
+outputs/content_review/<task-id>/slide_text_by_deck.json
+outputs/content_review/<task-id>/content_issue_candidates.json
+outputs/content_review/<task-id>/content_grading_comments.json
+outputs/content_review/<task-id>/content_grading_comments.md
+```
+
+By default, slide OCR uses local PaddleOCR with the fast PP-OCRv5 mobile models.
+The setup script installs both `paddleocr` and the PaddlePaddle CPU runtime.
+The dashboard auto-review path always uses PaddleOCR for slide text extraction.
+Non-Paddle OCR is treated as an explicit debug fallback only:
+
+```powershell
+# Local OCR, default
+$env:FEATHER_REVIEW_OCR_BACKEND = "paddle"
+
+# Explicit debug fallback only
+$env:FEATHER_REVIEW_ALLOW_NON_PADDLE_OCR = "1"
+$env:FEATHER_REVIEW_OCR_BACKEND = "codex"
+```
+
+By default, `--llm-backend auto` uses `OPENAI_API_KEY` when it is present. If no
+API key is present and the `codex` CLI is available, it runs `codex exec` with
+your Codex/ChatGPT subscription auth instead:
+
+```powershell
+python -m feather_auto.review_task_slides `
+  --llm-backend codex `
+  --codex-model gpt-5.5 `
+  --task-id <claimed-task-id>
+```
+
+The Codex backend defaults to `--review-speed fast`: it OCRs slides locally with
+PaddleOCR, starts a deck-level Codex comment as soon as each deck's OCR is
+ready, continues OCR on later decks while Codex writes earlier decks, then runs a
+final cross-deck ranking. This keeps Codex calls to roughly one per deck plus
+one ranking pass. Use `--review-speed thorough` only when you also want
+per-slide Codex drafts; that mode is much slower. Set `--codex-workers N` or
+`FEATHER_REVIEW_CODEX_WORKERS=N` to control parallel deck comment workers. Set
+`--ocr-workers N` or `FEATHER_REVIEW_OCR_WORKERS=N` to control parallel
+PaddleOCR workers in fast mode. Codex workers default to `3`; OCR workers
+default to `4`. Fast mode requests
+six comments per deck by default; override it with `--comments-per-deck N` or
+`FEATHER_REVIEW_COMMENTS_PER_DECK=N`.
+
+Review output is streamed to disk as it progresses. Per-deck comment drafts are
+written under:
+
+```text
+outputs/content_review/<task-id>/deck_reviews/
+```
+
+The combined `content_grading_comments.md` is refreshed as each deck finishes,
+then receives a final cross-deck quality ranking from strongest to weakest.
+
+The dashboard's `Auto review after claim` switch runs the same pipeline after a
+successful claim. It only writes local helper files; it does not submit or edit
+Feather comments.
+
+The dashboard has two workflow presets:
+
+- `Aesthetic Ranking`: uses the known ranking campaign, keeps `-raw-creation`
+  as the default batch suffix, and leaves auto review off by default.
+- `Content Grading`: uses the known content-grading campaign, leaves batch
+  suffix blank so ranking-specific filters do not hide tasks, and turns auto
+  review on by default.
+
 ## Dashboard Modes
 
 The dashboard exposes two main switches:
@@ -168,11 +251,11 @@ Behavior by mode:
 If a claim loses the race, for example Feather returns `NOT_FOUND`, the monitor
 logs `CLAIM_FAILED_CONTINUING` and continues polling.
 
-## Dashboard State Model
 Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
 campaign. If one exists, it stops without claiming and shows a blocking alert.
 
+## Dashboard State Model
 
 The dashboard server owns a background worker thread. It does not start a
 separate monitor subprocess and does not depend on a monitor PID file.
@@ -183,9 +266,9 @@ Main states:
 - `starting`: worker is starting
 - `monitoring`: worker is active
 - `found`: a matching task was found
-- `claim_failed_continuing`: claim attempt failed, monitor continues
 - `blocked_in_progress`: claim mode stopped because this account already has an
   in-progress task
+- `claim_failed_continuing`: claim attempt failed, monitor continues
 - `claimed`: a task was successfully claimed and the worker stopped
 - `error`: unrecoverable error
 
@@ -198,10 +281,11 @@ activity:
 
 ## Campaigns
 
-The dashboard currently ships with one campaign option:
+The dashboard currently ships with fixed campaign options:
 
 ```text
-929712fc-fa2a-45bc-94df-2ae6d445b2ca
+Aesthetic Ranking: 929712fc-fa2a-45bc-94df-2ae6d445b2ca
+Content Grading: c2978c67-7bc5-4fde-b4f5-330d0e001a35
 ```
 
 To add more campaigns, edit `CAMPAIGNS` in:
@@ -217,6 +301,9 @@ CAMPAIGNS = [
     {"id": "campaign-uuid", "name": "Readable campaign name"},
 ]
 ```
+
+For a new campaign, add it to both `CAMPAIGNS` and `REVIEW_MODES` in
+`feather_auto/dashboard_server.py`.
 
 The selected campaign id is sent into the same monitor logic used by the CLI.
 

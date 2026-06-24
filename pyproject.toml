@@ -9,6 +9,7 @@ description = "Monitor and optionally claim Feather tasks matching batch filters
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "paddleocr>=3.7.0",
     "requests>=2.31.0",
 ]
 
