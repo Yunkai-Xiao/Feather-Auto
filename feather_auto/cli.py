@@ -61,6 +61,7 @@ class MonitorConfig:
     claim: bool = False
     batch_id: str | None = None
     batch_name: str | None = None
+    batch_regex: str | None = None
     batch_suffix: str | None = None
     save: str | None = "last_found_task.json"
     status_file: str | None = None
@@ -267,35 +268,75 @@ def active_batch_ref(ref: dict[str, Any]) -> bool:
     return ref.get("status") == "active" and not ref.get("is_archived")
 
 
-def batch_refs_for_suffix(headers: dict[str, str], campaign_id: str, suffix: str | None) -> list[dict[str, Any]]:
+def suffix_to_batch_regex(suffix: str | None) -> str | None:
+    suffix = (suffix or "").strip()
     if not suffix:
+        return None
+    return f"{re.escape(suffix)}$"
+
+
+def effective_batch_regex(batch_regex: str | None, batch_suffix: str | None = None) -> str | None:
+    regex = (batch_regex or "").strip()
+    if regex:
+        return regex
+    return suffix_to_batch_regex(batch_suffix)
+
+
+def compile_batch_regex(batch_regex: str | None) -> re.Pattern[str] | None:
+    regex = (batch_regex or "").strip()
+    if not regex:
+        return None
+    try:
+        return re.compile(regex, re.I)
+    except re.error as exc:
+        raise ValueError(f"Invalid batch regex: {exc}") from exc
+
+
+def active_batch_refs(headers: dict[str, str], campaign_id: str) -> list[dict[str, Any]]:
+    return [ref for ref in fetch_batch_refs(headers, campaign_id) if active_batch_ref(ref)]
+
+
+def batch_ref_name(ref: dict[str, Any]) -> str:
+    return str(ref.get("name") or "")
+
+
+def batch_refs_for_regex(headers: dict[str, str], campaign_id: str, batch_regex: str | None) -> list[dict[str, Any]]:
+    pattern = compile_batch_regex(batch_regex)
+    if not pattern:
         return []
-    suffix = suffix.lower()
-    refs = fetch_batch_refs(headers, campaign_id)
-    return [
-        ref
-        for ref in refs
-        if str(ref.get("name", "")).lower().endswith(suffix)
-        and active_batch_ref(ref)
-    ]
+    return [ref for ref in active_batch_refs(headers, campaign_id) if pattern.search(batch_ref_name(ref))]
+
+
+def batch_refs_for_suffix(headers: dict[str, str], campaign_id: str, suffix: str | None) -> list[dict[str, Any]]:
+    return batch_refs_for_regex(headers, campaign_id, suffix_to_batch_regex(suffix))
+
+
+def batch_ref_summary(ref: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": ref.get("id"),
+        "name": ref.get("name"),
+        "status": ref.get("status"),
+        "is_archived": ref.get("is_archived"),
+    }
 
 
 def batch_refs_for_filters(
     headers: dict[str, str],
     campaign_id: str,
     batch_name: str | None,
-    batch_suffix: str | None,
+    batch_regex: str | None,
 ) -> list[dict[str, Any]]:
-    if not batch_name and not batch_suffix:
+    if not batch_name and not batch_regex:
         return []
 
-    refs = [ref for ref in fetch_batch_refs(headers, campaign_id) if active_batch_ref(ref)]
+    refs = active_batch_refs(headers, campaign_id)
     if batch_name:
         needle = batch_name.lower()
-        refs = [ref for ref in refs if needle in str(ref.get("name", "")).lower()]
-    if batch_suffix:
-        suffix = batch_suffix.lower()
-        refs = [ref for ref in refs if str(ref.get("name", "")).lower().endswith(suffix)]
+        refs = [ref for ref in refs if needle in batch_ref_name(ref).lower()]
+    if batch_regex:
+        pattern = compile_batch_regex(batch_regex)
+        if pattern:
+            refs = [ref for ref in refs if pattern.search(batch_ref_name(ref))]
     return refs
 
 
@@ -319,12 +360,12 @@ def search_batch_ids(
     payload: dict[str, Any],
     batch_id: str | None,
     batch_name: str | None,
-    batch_suffix: str | None,
+    batch_regex: str | None,
     allowed_batch_refs: list[dict[str, Any]],
 ) -> list[str] | None:
     if batch_id:
         return [batch_id]
-    if batch_name or batch_suffix:
+    if batch_name or batch_regex:
         return unique_batch_ids(allowed_batch_refs)
     copied_batch_id = batch_id_from_payload(payload)
     return [copied_batch_id] if copied_batch_id else None
@@ -352,10 +393,10 @@ def resolve_batch_searches(
     payload: dict[str, Any],
     batch_id: str | None,
     batch_name: str | None,
-    batch_suffix: str | None,
+    batch_regex: str | None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str | None, dict[str, Any]]]]:
-    allowed_batch_refs = batch_refs_for_filters(headers, campaign_id, batch_name, batch_suffix)
-    batch_ids = search_batch_ids(payload, batch_id, batch_name, batch_suffix, allowed_batch_refs)
+    allowed_batch_refs = batch_refs_for_filters(headers, campaign_id, batch_name, batch_regex)
+    batch_ids = search_batch_ids(payload, batch_id, batch_name, batch_regex, allowed_batch_refs)
     return allowed_batch_refs, batch_search_payloads(payload, batch_ids)
 
 
@@ -367,7 +408,7 @@ def task_matches_filters(
     task: dict[str, Any],
     batch_id: str | None,
     batch_name: str | None,
-    batch_suffix: str | None,
+    batch_regex: str | None,
     allowed_batch_refs: list[dict[str, Any]],
     tag_count_min: int | None,
     tag_count_max: int | None,
@@ -375,7 +416,7 @@ def task_matches_filters(
     if (
         not batch_id
         and not batch_name
-        and not batch_suffix
+        and not batch_regex
         and not allowed_batch_refs
         and tag_count_min is None
         and tag_count_max is None
@@ -405,9 +446,9 @@ def task_matches_filters(
         allowed_names = {str(ref.get("name")) for ref in allowed_batch_refs if ref.get("name")}
         if not any(value in allowed_ids or value in allowed_names for value in values):
             return False
-    elif batch_suffix:
-        suffix = batch_suffix.lower()
-        if not any(value.lower().endswith(suffix) for value in values):
+    elif batch_regex:
+        pattern = compile_batch_regex(batch_regex)
+        if pattern and not any(pattern.search(value) for value in values):
             return False
 
     return True
@@ -571,7 +612,7 @@ def block_in_progress_status(
     task: dict[str, Any],
     campaign_id: str,
     claim: bool,
-    batch_suffix: str | None,
+    batch_regex: str | None,
     tag_count_filter: dict[str, int] | None,
 ) -> dict[str, Any]:
     task_id = str(task.get("id") or "")
@@ -580,7 +621,7 @@ def block_in_progress_status(
         "phase": "stopped",
         "campaign_id": campaign_id,
         "claim": claim,
-        "batch_suffix": batch_suffix,
+        "batch_regex": batch_regex,
         "tag_count_filter": tag_count_filter,
         "task_id": task_id,
         "title": task_log_title(task),
@@ -597,12 +638,12 @@ def stop_for_in_progress_task(
     task: dict[str, Any],
     campaign_id: str,
     claim: bool,
-    batch_suffix: str | None,
+    batch_regex: str | None,
     tag_count_filter: dict[str, int] | None,
     emit: Emit,
     update_status: Callable[..., None],
 ) -> int:
-    status = block_in_progress_status(task, campaign_id, claim, batch_suffix, tag_count_filter)
+    status = block_in_progress_status(task, campaign_id, claim, batch_regex, tag_count_filter)
     task_id = status.get("in_progress_task_id") or "unknown"
     title = status.get("in_progress_title") or "(untitled)"
     emit("\a", end="", flush=True)
@@ -691,7 +732,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--claim", action="store_true", help="Claim the first matching task.")
     parser.add_argument("--batch-id", help="Only match tasks containing this batch id.")
     parser.add_argument("--batch-name", help="Only match tasks containing this batch name.")
-    parser.add_argument("--batch-suffix", help="Only match active batch names ending with this suffix.")
+    parser.add_argument("--batch-regex", help="Only match active batch names matching this regex.")
+    parser.add_argument("--batch-suffix", help="Deprecated alias: only match active batch names ending with this suffix.")
     parser.add_argument("--tag-count", type=int, help="Shorthand for --tag-count-min N --tag-count-max N.")
     parser.add_argument("--tag-count-min", type=int, help="Only match tasks with at least this many tags.")
     parser.add_argument("--tag-count-max", type=int, help="Only match tasks with at most this many tags.")
@@ -741,11 +783,14 @@ def run_monitor(
     if config.tag_count_min is not None and config.tag_count_max is not None and config.tag_count_max < config.tag_count_min:
         raise SystemExit("Use --tag-count-max >= --tag-count-min.")
     tag_count_filter = tag_count_filter_payload(config.tag_count_min, config.tag_count_max)
+    batch_regex = effective_batch_regex(config.batch_regex, config.batch_suffix)
+    compile_batch_regex(batch_regex)
 
     def stop_requested() -> bool:
         return bool(stop_event is not None and stop_event.is_set())
 
     def update_status(**status: Any) -> None:
+        status.setdefault("batch_regex", batch_regex)
         payload = status_payload(**status)
         write_status_payload(config.status_file, payload)
         if status_callback:
@@ -755,7 +800,7 @@ def run_monitor(
         state="starting",
         campaign_id=config.campaign_id,
         claim=config.claim,
-        batch_suffix=config.batch_suffix,
+        batch_regex=batch_regex,
         tag_count_filter=tag_count_filter,
     )
 
@@ -764,7 +809,7 @@ def run_monitor(
             state="stopped",
             campaign_id=config.campaign_id,
             claim=config.claim,
-            batch_suffix=config.batch_suffix,
+            batch_regex=batch_regex,
             tag_count_filter=tag_count_filter,
         )
         return 0
@@ -782,7 +827,7 @@ def run_monitor(
                 in_progress_task,
                 config.campaign_id,
                 config.claim,
-                config.batch_suffix,
+                batch_regex,
                 tag_count_filter,
                 emit,
                 update_status,
@@ -794,18 +839,18 @@ def run_monitor(
         payload,
         config.batch_id,
         config.batch_name,
-        config.batch_suffix,
+        batch_regex,
     )
     current_batch_search_ids = batch_search_id_list(search_payloads)
 
     def emit_batch_targets(refs: list[dict[str, Any]], searches: list[tuple[str | None, dict[str, Any]]]) -> None:
         search_ids = batch_search_id_list(searches)
-        if config.batch_name or config.batch_suffix:
+        if config.batch_name or batch_regex:
             filters = []
             if config.batch_name:
                 filters.append(f"name={config.batch_name}")
-            if config.batch_suffix:
-                filters.append(f"suffix={config.batch_suffix}")
+            if batch_regex:
+                filters.append(f"regex={batch_regex}")
             emit(
                 f"batch_filter {' '.join(filters)} active_matches={len(refs)} "
                 f"server_batch_filters={len(search_ids)}",
@@ -824,7 +869,7 @@ def run_monitor(
         phase="ready",
         campaign_id=config.campaign_id,
         claim=config.claim,
-        batch_suffix=config.batch_suffix,
+        batch_regex=batch_regex,
         tag_count_filter=tag_count_filter,
         active_batch_matches=len(allowed_batch_refs),
         server_batch_filters=current_batch_search_ids,
@@ -843,7 +888,7 @@ def run_monitor(
                 state="stopped",
                 campaign_id=config.campaign_id,
                 claim=config.claim,
-                batch_suffix=config.batch_suffix,
+                batch_regex=batch_regex,
                 tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
                 server_batch_filters=current_batch_search_ids,
@@ -851,14 +896,14 @@ def run_monitor(
             return 0
 
         now = time.strftime("%H:%M:%S")
-        if config.batch_name or config.batch_suffix:
+        if config.batch_name or batch_regex:
             allowed_batch_refs, search_payloads = resolve_batch_searches(
                 search_headers,
                 config.campaign_id,
                 payload,
                 config.batch_id,
                 config.batch_name,
-                config.batch_suffix,
+                batch_regex,
             )
             current_batch_search_ids = batch_search_id_list(search_payloads)
             batch_signature = tuple(current_batch_search_ids)
@@ -887,7 +932,7 @@ def run_monitor(
             phase="polling",
             campaign_id=config.campaign_id,
             claim=config.claim,
-            batch_suffix=config.batch_suffix,
+            batch_regex=batch_regex,
             tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
             server_batch_filters=current_batch_search_ids,
@@ -903,7 +948,7 @@ def run_monitor(
                 task,
                 config.batch_id,
                 config.batch_name,
-                config.batch_suffix,
+                batch_regex,
                 allowed_batch_refs,
                 config.tag_count_min,
                 config.tag_count_max,
@@ -917,9 +962,9 @@ def run_monitor(
             seen.add(task_id)
             title = task_log_title(task)
             current_tag_count = task_tag_count(task)
-            if config.batch_suffix:
+            if batch_regex:
                 emit(
-                    f"FOUND {task_id}: {title} suffix={config.batch_suffix} "
+                    f"FOUND {task_id}: {title} regex={batch_regex} "
                     f"tag_count={tag_count_label(current_tag_count)} "
                     f"batch_name={task_batch_name_label(task)}",
                     flush=True,
@@ -936,7 +981,7 @@ def run_monitor(
                         in_progress_task,
                         config.campaign_id,
                         config.claim,
-                        config.batch_suffix,
+                        batch_regex,
                         tag_count_filter,
                         emit,
                         update_status,
@@ -1012,7 +1057,7 @@ def run_monitor(
                 state="stopped",
                 campaign_id=config.campaign_id,
                 claim=config.claim,
-                batch_suffix=config.batch_suffix,
+                batch_regex=batch_regex,
                 tag_count_filter=tag_count_filter,
                 active_batch_matches=len(allowed_batch_refs),
                 server_batch_filters=current_batch_search_ids,
@@ -1028,7 +1073,7 @@ def run_monitor(
             phase="sleeping",
             campaign_id=config.campaign_id,
             claim=config.claim,
-            batch_suffix=config.batch_suffix,
+            batch_regex=batch_regex,
             tag_count_filter=tag_count_filter,
             active_batch_matches=len(allowed_batch_refs),
             server_batch_filters=current_batch_search_ids,
@@ -1043,7 +1088,7 @@ def run_monitor(
                     state="stopped",
                     campaign_id=config.campaign_id,
                     claim=config.claim,
-                    batch_suffix=config.batch_suffix,
+                    batch_regex=batch_regex,
                     tag_count_filter=tag_count_filter,
                     active_batch_matches=len(allowed_batch_refs),
                     server_batch_filters=current_batch_search_ids,
@@ -1076,6 +1121,7 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         claim=args.claim,
         batch_id=args.batch_id,
         batch_name=args.batch_name,
+        batch_regex=args.batch_regex,
         batch_suffix=args.batch_suffix,
         save=args.save or None,
         status_file=args.status_file,

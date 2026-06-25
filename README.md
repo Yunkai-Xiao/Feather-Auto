@@ -9,7 +9,7 @@ scripted checks and debugging.
 ## What It Does
 
 - Polls Feather's task search API with your own logged-in session cookie.
-- Filters tasks by active batch refs, batch suffix, batch name, or batch id.
+- Filters tasks by active batch refs, batch regex, batch name, or batch id.
 - Supports randomized polling intervals.
 - Can run in observe-only mode, open-on-found mode, or claim mode.
 - Stops after a successful claim so one account does not pick up multiple tasks.
@@ -226,10 +226,10 @@ Feather comments.
 
 The dashboard has two workflow presets:
 
-- `Aesthetic Ranking`: uses the known ranking campaign, keeps `-raw-creation`
-  as the default batch suffix, and leaves auto review off by default.
+- `Aesthetic Ranking`: uses the known ranking campaign, keeps `Aesthetics? Preferences`
+  as the default batch regex, and leaves auto review off by default.
 - `Content Grading`: uses the known content-grading campaign, leaves batch
-  suffix blank so ranking-specific filters do not hide tasks, and turns auto
+  regex blank so ranking-specific filters do not hide tasks, and turns auto
   review on by default.
 
 ## Dashboard Modes
@@ -312,18 +312,21 @@ The selected campaign id is sent into the same monitor logic used by the CLI.
 Common filter:
 
 ```text
--raw-creation
+Aesthetics? Preferences
 ```
 
-When `--batch-suffix` or the dashboard batch suffix field is set, the monitor
+When `--batch-regex` or the dashboard batch regex field is set, the monitor
 first loads active Feather task batch refs for the campaign and only accepts
 tasks belonging to matching active batches.
 
 Supported CLI filters:
 
-- `--batch-suffix=-raw-creation`
+- `--batch-regex="Aesthetics? Preferences"`
 - `--batch-name slides-teacher-master-spud-stage2-r4-resume240-raw-creation`
 - `--batch-id 4905bfbb-d090-48be-8db8-b85267348a80`
+
+`--batch-suffix=-raw-creation` is still accepted as a backwards-compatible
+alias for `--batch-regex="\-raw\-creation$"`.
 
 ## Tag Count Filtering
 
@@ -344,43 +347,43 @@ Dashboard usage is recommended, but the CLI remains useful for one-off tests.
 Observe mode:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --curl-file my_feather_request.curl.txt
 ```
 
 Observe once and exit:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --once --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --once --curl-file my_feather_request.curl.txt
 ```
 
 Open the first matching task:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --open --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --open --curl-file my_feather_request.curl.txt
 ```
 
 Claim the first matching task:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt
 ```
 
 Claim only tasks with 4 through 8 tags:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-suffix=-raw-creation --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
 ```
 
 Use randomized polling intervals:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt
 ```
 
 Write live logs and status JSON:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-suffix=-raw-creation --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
 ```
 
 Watch the log:

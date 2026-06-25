@@ -15,7 +15,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .cli import MonitorConfig, run_monitor, tag_count_filter_payload
+from .cli import (
+    BASE_URL,
+    MonitorConfig,
+    active_batch_refs,
+    batch_ref_summary,
+    build_headers,
+    compile_batch_regex,
+    effective_batch_regex,
+    request_parts_from_curl,
+    run_monitor,
+    tag_count_filter_payload,
+)
 from .review_task_slides import run_review_pipeline
 
 
@@ -48,6 +59,7 @@ REVIEW_MODES = [
         "id": "aesthetic_ranking",
         "name": "Aesthetic Ranking",
         "campaign_id": AESTHETIC_RANKING_CAMPAIGN_ID,
+        "batch_regex": "Aesthetics? Preferences",
         "batch_suffix": "-raw-creation",
         "auto_review": False,
         "custom_campaign": False,
@@ -56,6 +68,7 @@ REVIEW_MODES = [
         "id": "content_grading",
         "name": "Content Grading",
         "campaign_id": CONTENT_GRADING_CAMPAIGN_ID,
+        "batch_regex": "",
         "batch_suffix": "",
         "auto_review": True,
         "custom_campaign": False,
@@ -75,6 +88,39 @@ def review_mode_config(review_mode: str) -> dict[str, Any]:
         if mode["id"] == review_mode:
             return mode
     return REVIEW_MODES[0]
+
+
+def dashboard_monitor_settings(config: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
+    review_mode = str(config.get("reviewMode") or DEFAULT_REVIEW_MODE).strip()
+    mode_config = review_mode_config(review_mode)
+    custom_campaign_id = str(config.get("customCampaignId") or "").strip()
+    campaign_id = str(config.get("campaignId") or "").strip()
+    if mode_config.get("custom_campaign"):
+        campaign_id = custom_campaign_id or campaign_id or str(mode_config.get("campaign_id") or "")
+        if not campaign_id:
+            raise ValueError("Paste a Content Grading campaign id before starting.")
+    else:
+        campaign_id = campaign_id or str(mode_config.get("campaign_id") or DEFAULT_CAMPAIGN_ID)
+    return review_mode, mode_config, campaign_id
+
+
+def dashboard_batch_regex(config: dict[str, Any], mode_config: dict[str, Any]) -> str:
+    if "batchRegex" in config and config.get("batchRegex") is not None:
+        return str(config.get("batchRegex") or "").strip()
+    if "batchSuffix" in config and config.get("batchSuffix") is not None:
+        return effective_batch_regex(None, str(config.get("batchSuffix") or "").strip()) or ""
+
+    regex = str(mode_config.get("batch_regex") or "").strip()
+    if regex:
+        return regex
+    return effective_batch_regex(None, str(mode_config.get("batch_suffix") or "").strip()) or ""
+
+
+def dashboard_curl_text(config: dict[str, Any]) -> str:
+    curl_text = str(config.get("curlText") or "").strip()
+    if curl_text:
+        return curl_text
+    return read_text(CURL_FILE).strip()
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -383,17 +429,9 @@ class MonitorController:
         if not CURL_FILE.exists():
             raise ValueError("Paste a Feather Copy-as-cURL before starting.")
 
-        review_mode = str(config.get("reviewMode") or DEFAULT_REVIEW_MODE).strip()
-        mode_config = review_mode_config(review_mode)
-        custom_campaign_id = str(config.get("customCampaignId") or "").strip()
-        campaign_id = str(config.get("campaignId") or "").strip()
-        if mode_config.get("custom_campaign"):
-            campaign_id = custom_campaign_id or campaign_id or str(mode_config.get("campaign_id") or "")
-            if not campaign_id:
-                raise ValueError("Paste a Content Grading campaign id before starting.")
-        else:
-            campaign_id = campaign_id or str(mode_config.get("campaign_id") or DEFAULT_CAMPAIGN_ID)
-        batch_suffix = str(config.get("batchSuffix") if config.get("batchSuffix") is not None else mode_config.get("batch_suffix", "")).strip()
+        review_mode, mode_config, campaign_id = dashboard_monitor_settings(config)
+        batch_regex = dashboard_batch_regex(config, mode_config)
+        compile_batch_regex(batch_regex)
         tag_count_min = optional_int(config.get("tagCountMin"), "Tag count min")
         tag_count_max = optional_int(config.get("tagCountMax"), "Tag count max")
         raw_tag_count = config.get("tagCount")
@@ -416,7 +454,7 @@ class MonitorController:
             curl_file=str(CURL_FILE),
             interval_min=interval_min,
             interval_max=interval_max,
-            batch_suffix=batch_suffix,
+            batch_regex=batch_regex,
             save=str(SAVE_FILE),
             status_file=str(STATUS_FILE),
             claim=bool(config.get("claim", True)),
@@ -457,7 +495,7 @@ class MonitorController:
                 "campaign_id": campaign_id,
                 "campaign_name": campaign_name(campaign_id),
                 "claim": monitor_config.claim,
-                "batch_suffix": batch_suffix,
+                "batch_regex": batch_regex,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
                 "auto_review": auto_review,
             }
@@ -518,6 +556,33 @@ def stop_monitor() -> bool:
     return MONITOR.stop()
 
 
+def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
+    _review_mode, mode_config, campaign_id = dashboard_monitor_settings(config)
+    batch_regex = dashboard_batch_regex(config, mode_config)
+    pattern = compile_batch_regex(batch_regex)
+    if not pattern:
+        raise ValueError("Enter a batch regex before testing.")
+
+    curl_text = dashboard_curl_text(config)
+    if not curl_text:
+        raise ValueError("Paste or save a Feather Copy-as-cURL before testing batch regex.")
+
+    cookie, _payload = request_parts_from_curl(curl_text, campaign_id, page_size=20)
+    campaign_url = f"{BASE_URL}/campaigns/{campaign_id}?tab=tasks&tasks-tab=unclaimed"
+    headers = build_headers(cookie, campaign_id, campaign_url)
+    refs = active_batch_refs(headers, campaign_id)
+    matches = [batch_ref_summary(ref) for ref in refs if pattern.search(str(ref.get("name") or ""))]
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name(campaign_id),
+        "batch_regex": batch_regex,
+        "active_count": len(refs),
+        "match_count": len(matches),
+        "matches": matches,
+    }
+
+
 def dashboard_state() -> dict[str, Any]:
     return MONITOR.state()
 
@@ -552,6 +617,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/stop":
                 stopped = stop_monitor()
                 write_json(self, 200, {"ok": True, "stopped": stopped, "state": dashboard_state()})
+                return
+            if self.path == "/api/test-batch-regex":
+                payload = read_json_body(self)
+                write_json(self, 200, test_batch_regex(payload))
                 return
             if self.path == "/api/save-curl":
                 payload = read_json_body(self)

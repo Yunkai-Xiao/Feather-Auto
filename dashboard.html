@@ -274,6 +274,52 @@
         font-weight: 650;
       }
 
+      .inline-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+      }
+
+      .inline-actions button {
+        width: auto;
+      }
+
+      .batch-test-result {
+        margin-top: 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-subtle);
+        padding: 8px 9px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .batch-test-result.pass {
+        border-color: rgba(21, 128, 61, 0.35);
+        background: #f0fdf4;
+        color: var(--success);
+      }
+
+      .batch-test-result.fail {
+        border-color: rgba(185, 28, 28, 0.35);
+        background: #fef2f2;
+        color: var(--danger);
+      }
+
+      .batch-test-result ul {
+        margin: 6px 0 0;
+        padding-left: 18px;
+        color: var(--ink);
+      }
+
+      .batch-test-result li {
+        margin: 3px 0;
+        word-break: break-word;
+      }
+
       .curl-check {
         margin-top: 10px;
         border: 1px solid var(--border);
@@ -641,8 +687,13 @@
               </div>
 
               <div class="field">
-                <label for="batchSuffix">Batch suffix</label>
-                <input id="batchSuffix" value="-raw-creation" />
+                <label for="batchRegex">Batch regex</label>
+                <input id="batchRegex" value="Aesthetics? Preferences" placeholder="Aesthetics? Preferences" />
+                <div class="inline-actions">
+                  <button id="testBatchRegex" type="button">Test regex</button>
+                  <span class="small" id="batchRegexTestMeta">not tested</span>
+                </div>
+                <div class="batch-test-result" id="batchRegexTestResult">Not tested.</div>
               </div>
 
               <div class="row">
@@ -736,7 +787,7 @@
               <div class="metric">
                 <span class="label">Batch matches</span>
                 <span class="metric-value" id="batchMatches">-</span>
-                <span class="metric-note" id="batchSuffixView">-</span>
+                <span class="metric-note" id="batchRegexView">-</span>
               </div>
               <div class="metric">
                 <span class="label">Mode</span>
@@ -928,7 +979,8 @@
         if (mode.campaign_id && !mode.custom_campaign) {
           $("campaignId").value = mode.campaign_id;
         }
-        $("batchSuffix").value = mode.batch_suffix || "";
+        $("batchRegex").value = mode.batch_regex || (mode.batch_suffix ? `${mode.batch_suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$` : "");
+        renderBatchRegexTest(null);
         $("autoReview").checked = Boolean(mode.auto_review);
         currentCurlValidation();
       }
@@ -1271,6 +1323,58 @@
         return result;
       }
 
+      function renderBatchRegexTest(payload, error = "") {
+        const result = $("batchRegexTestResult");
+        result.className = "batch-test-result";
+        $("batchRegexTestMeta").textContent = "not tested";
+        if (error) {
+          result.classList.add("fail");
+          result.textContent = error;
+          $("batchRegexTestMeta").textContent = "error";
+          return;
+        }
+        if (!payload) {
+          result.textContent = "Not tested.";
+          return;
+        }
+
+        const matches = Array.isArray(payload.matches) ? payload.matches : [];
+        result.classList.add(matches.length ? "pass" : "fail");
+        result.textContent = "";
+        const summary = document.createElement("div");
+        summary.textContent = `${payload.match_count || 0}/${payload.active_count || 0} active batches match ${payload.batch_regex || ""}`;
+        result.appendChild(summary);
+        $("batchRegexTestMeta").textContent = `${payload.match_count || 0} matches`;
+        if (!matches.length) return;
+
+        const list = document.createElement("ul");
+        for (const match of matches.slice(0, 30)) {
+          const item = document.createElement("li");
+          item.textContent = match.name || match.id || "(unnamed batch)";
+          list.appendChild(item);
+        }
+        if (matches.length > 30) {
+          const item = document.createElement("li");
+          item.textContent = `and ${matches.length - 30} more`;
+          list.appendChild(item);
+        }
+        result.appendChild(list);
+      }
+
+      async function testBatchRegex() {
+        const pattern = $("batchRegex").value.trim();
+        if (!pattern) {
+          renderBatchRegexTest(null, "Enter a batch regex before testing.");
+          return;
+        }
+        $("batchRegexTestMeta").textContent = "testing...";
+        const result = await api("/api/test-batch-regex", {
+          method: "POST",
+          body: JSON.stringify(configFromForm()),
+        });
+        renderBatchRegexTest(result);
+      }
+
       async function refresh() {
         latest = await api("/api/state");
         const status = latest.status || {};
@@ -1289,7 +1393,7 @@
         setText("lastPoll", status.last_poll ? `last poll ${status.last_poll}` : "-");
         setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
         setText("batchMatches", status.active_batch_matches);
-        setText("batchSuffixView", status.batch_suffix || $("batchSuffix").value || "-");
+        setText("batchRegexView", status.batch_regex || $("batchRegex").value || "-");
         setText("mode", `${modeText(status)} / ${status.review_mode_name || currentModeConfig()?.name || $("reviewMode").value}`);
         setText("updated", ageText(status.updated_at));
         setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
@@ -1323,7 +1427,7 @@
           reviewMode: $("reviewMode").value,
           campaignId: effectiveCampaignId(),
           customCampaignId: $("customCampaignId").value.trim(),
-          batchSuffix: $("batchSuffix").value.trim(),
+          batchRegex: $("batchRegex").value.trim(),
           tagCountMin: $("tagCountMin").value.trim(),
           tagCountMax: $("tagCountMax").value.trim(),
           intervalMin: Number($("intervalMin").value),
@@ -1398,7 +1502,9 @@
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
+      $("testBatchRegex").addEventListener("click", () => testBatchRegex().catch((error) => renderBatchRegexTest(null, error.message)));
       $("curlText").addEventListener("input", currentCurlValidation);
+      $("batchRegex").addEventListener("input", () => renderBatchRegexTest(null));
       $("campaignId").addEventListener("change", currentCurlValidation);
       $("customCampaignId").addEventListener("input", currentCurlValidation);
       $("reviewMode").addEventListener("change", applyReviewModeDefaults);
