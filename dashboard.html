@@ -482,6 +482,8 @@
       }
 
       .dot.blocked_in_progress,
+      .dot.stopped_inactive,
+      .dot.stopping_inactive,
       .dot.error {
         background: var(--danger);
       }
@@ -688,7 +690,7 @@
 
               <div class="field">
                 <label for="batchRegex">Batch regex</label>
-                <input id="batchRegex" value="Aesthetics? Preferences" placeholder="Aesthetics? Preferences" />
+                <input id="batchRegex" value="Aesthetic" placeholder="Aesthetic" />
                 <div class="inline-actions">
                   <button id="testBatchRegex" type="button">Test regex</button>
                   <span class="small" id="batchRegexTestMeta">not tested</span>
@@ -703,7 +705,7 @@
                 </div>
                 <div class="field">
                   <label for="tagCountMax">Tag max</label>
-                  <input id="tagCountMax" type="number" min="0" step="1" placeholder="Any" />
+                  <input id="tagCountMax" type="number" min="0" step="1" value="8" placeholder="Any" />
                 </div>
               </div>
 
@@ -884,6 +886,7 @@
       let latest = null;
       let titleFlashTimer = null;
       let originalTitle = document.title;
+      let activeSessionId = null;
 
       const $ = (id) => document.getElementById(id);
 
@@ -904,6 +907,27 @@
         const body = await response.json();
         if (!response.ok || body.ok === false) throw new Error(body.error || response.statusText);
         return body;
+      }
+
+      function updateActiveSession(status, running) {
+        if (status.active_session_id) {
+          activeSessionId = status.active_session_id;
+        } else if (!running) {
+          activeSessionId = null;
+        }
+      }
+
+      async function sendHeartbeat() {
+        if (!activeSessionId) return;
+        try {
+          const result = await api("/api/heartbeat", {
+            method: "POST",
+            body: JSON.stringify({ sessionId: activeSessionId }),
+          });
+          if (!result.active) activeSessionId = null;
+        } catch {
+          // The server-side lease will stop the worker if the dashboard cannot be reached.
+        }
       }
 
       function unixTimeText(value) {
@@ -980,6 +1004,8 @@
           $("campaignId").value = mode.campaign_id;
         }
         $("batchRegex").value = mode.batch_regex || (mode.batch_suffix ? `${mode.batch_suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$` : "");
+        $("tagCountMin").value = mode.tag_count_min ?? "";
+        $("tagCountMax").value = mode.tag_count_max ?? "";
         renderBatchRegexTest(null);
         $("autoReview").checked = Boolean(mode.auto_review);
         currentCurlValidation();
@@ -1381,6 +1407,8 @@
         const running = latest.running;
         const state = status.state || (running ? "running" : "stopped");
         const phase = status.phase || "-";
+        updateActiveSession(status, running);
+        sendHeartbeat();
 
         renderReviewModes(latest.review_modes, status.review_mode);
         renderCampaigns(latest.campaigns, status.campaign_id);
@@ -1388,7 +1416,7 @@
 
         setText("running", running ? `running (${latest.worker_id || "worker"})` : state);
         setText("state", state);
-        setText("phase", running ? phase : "-");
+        setText("phase", running || state === "stopped_inactive" || state === "stopping_inactive" ? phase : "-");
         setText("unclaimed", status.unclaimed_count);
         setText("lastPoll", status.last_poll ? `last poll ${status.last_poll}` : "-");
         setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
@@ -1417,6 +1445,8 @@
         if (!$("curlText").value.trim()) currentCurlValidation();
         if (state === "blocked_in_progress") {
           setMessage(status.blocking_reason || "Claiming stopped because an in-progress task already exists.");
+        } else if (state === "stopped_inactive" || state === "stopping_inactive") {
+          setMessage(status.stop_reason || "Stopped because the active dashboard heartbeat was lost.");
         }
         handleAlerts(status);
       }
@@ -1449,6 +1479,8 @@
           method: "POST",
           body: JSON.stringify(configFromForm()),
         });
+        activeSessionId = result.session_id || result.state?.status?.active_session_id || null;
+        sendHeartbeat();
         $("curlText").value = "";
         setMessage(`Started worker ${result.worker_id || ""}`.trim());
         await refresh();
@@ -1457,6 +1489,7 @@
       async function stop() {
         setMessage("Stopping...");
         const result = await api("/api/stop", { method: "POST", body: "{}" });
+        activeSessionId = null;
         setMessage(result.stopped ? "Stop requested." : "No running monitor.");
         await refresh();
       }
@@ -1508,6 +1541,12 @@
       $("campaignId").addEventListener("change", currentCurlValidation);
       $("customCampaignId").addEventListener("input", currentCurlValidation);
       $("reviewMode").addEventListener("change", applyReviewModeDefaults);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          sendHeartbeat();
+          refresh().catch((error) => setMessage(error.message));
+        }
+      });
       $("ackTimerAlert").addEventListener("click", () => {
         const taskId = latest?.status?.task_id || "unknown";
         localStorage.setItem(claimAlertKey(taskId), "1");
@@ -1526,6 +1565,7 @@
       });
 
       refresh().catch((error) => setMessage(error.message));
+      setInterval(() => sendHeartbeat(), 2000);
       setInterval(() => refresh().catch(() => {}), 1000);
     </script>
   </body>

@@ -8,7 +8,9 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import traceback
+import uuid
 from argparse import Namespace
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -59,8 +61,9 @@ REVIEW_MODES = [
         "id": "aesthetic_ranking",
         "name": "Aesthetic Ranking",
         "campaign_id": AESTHETIC_RANKING_CAMPAIGN_ID,
-        "batch_regex": "Aesthetics? Preferences",
+        "batch_regex": "Aesthetic",
         "batch_suffix": "-raw-creation",
+        "tag_count_max": 8,
         "auto_review": False,
         "custom_campaign": False,
     },
@@ -74,6 +77,11 @@ REVIEW_MODES = [
         "custom_campaign": False,
     },
 ]
+ACTIVE_SESSION_TTL_SECONDS = 20.0
+ACTIVE_SESSION_CHECK_SECONDS = 1.0
+INACTIVE_SESSION_REASON = (
+    "Dashboard heartbeat stopped. Search and claim were stopped to prevent background claims."
+)
 
 
 def campaign_name(campaign_id: str) -> str:
@@ -159,6 +167,29 @@ def optional_int(value: Any, label: str) -> int | None:
     if parsed < 0:
         raise ValueError(f"{label} must be >= 0.")
     return parsed
+
+
+def dashboard_tag_count_bounds(config: dict[str, Any], mode_config: dict[str, Any]) -> tuple[int | None, int | None]:
+    raw_tag_count = config.get("tagCount")
+    if raw_tag_count not in (None, ""):
+        explicit_min = optional_int(config.get("tagCountMin"), "Tag count min")
+        explicit_max = optional_int(config.get("tagCountMax"), "Tag count max")
+        if explicit_min is not None or explicit_max is not None:
+            raise ValueError("Use either Tag count or a Tag count range, not both.")
+        tag_count = optional_int(raw_tag_count, "Tag count")
+        return tag_count, tag_count
+
+    tag_count_min = optional_int(
+        config.get("tagCountMin") if "tagCountMin" in config else mode_config.get("tag_count_min"),
+        "Tag count min",
+    )
+    tag_count_max = optional_int(
+        config.get("tagCountMax") if "tagCountMax" in config else mode_config.get("tag_count_max"),
+        "Tag count max",
+    )
+    if tag_count_min is not None and tag_count_max is not None and tag_count_max < tag_count_min:
+        raise ValueError("Tag count max must be >= tag count min.")
+    return tag_count_min, tag_count_max
 
 
 def tail(path: Path, max_lines: int = 260) -> str:
@@ -330,9 +361,54 @@ class MonitorController:
         self._stop_event = threading.Event()
         self._status: dict[str, Any] = {}
         self._last_error = ""
+        self._active_session_id: str | None = None
+        self._last_heartbeat_at: float | None = None
+        self._stop_reason = ""
 
     def _running_unlocked(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    def _session_fields_unlocked(self, now: float | None = None) -> dict[str, Any]:
+        now = time.monotonic() if now is None else now
+        age = None
+        if self._last_heartbeat_at is not None:
+            age = max(0.0, now - self._last_heartbeat_at)
+        return {
+            "active_session_id": self._active_session_id,
+            "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
+            "heartbeat_age_seconds": round(age, 1) if age is not None else None,
+            "stop_reason": INACTIVE_SESSION_REASON if self._stop_reason == "inactive_session" else None,
+        }
+
+    def _stop_inactive_session_unlocked(self, now: float | None = None) -> bool:
+        if not self._running_unlocked() or not self._active_session_id or self._last_heartbeat_at is None:
+            return False
+        now = time.monotonic() if now is None else now
+        heartbeat_age = now - self._last_heartbeat_at
+        if heartbeat_age <= ACTIVE_SESSION_TTL_SECONDS:
+            return False
+        self._stop_reason = "inactive_session"
+        self._stop_event.set()
+        self._status = {
+            **self._status,
+            "state": "stopping_inactive",
+            "phase": "waiting_for_worker_stop",
+            "heartbeat_age_seconds": round(heartbeat_age, 1),
+            "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
+            "stop_reason": INACTIVE_SESSION_REASON,
+        }
+        return True
+
+    def _watch_active_session(self, session_id: str, stop_event: threading.Event) -> None:
+        while not stop_event.wait(ACTIVE_SESSION_CHECK_SECONDS):
+            stopped = False
+            with self._lock:
+                if self._active_session_id != session_id or not self._running_unlocked():
+                    return
+                stopped = self._stop_inactive_session_unlocked()
+            if stopped:
+                self._emit("STOPPING inactive_dashboard_session heartbeat_missing", flush=True)
+                return
 
     def _emit(self, *values: Any, sep: str = " ", end: str = "\n", flush: bool = True) -> None:
         del flush
@@ -344,7 +420,15 @@ class MonitorController:
 
     def _update_status(self, payload: dict[str, Any]) -> None:
         with self._lock:
-            self._status = dict(payload)
+            status = dict(payload)
+            if status.get("state") == "stopped" and self._stop_reason == "inactive_session":
+                status = {
+                    **status,
+                    "state": "stopped_inactive",
+                    "phase": "stopped",
+                    "stop_reason": INACTIVE_SESSION_REASON,
+                }
+            self._status = {**status, **self._session_fields_unlocked()}
 
     def _review_claimed_task(self, task_id: str) -> None:
         review_dir = REVIEW_OUTPUT_ROOT / task_id
@@ -408,18 +492,33 @@ class MonitorController:
                 emit=self._emit,
                 status_callback=self._update_status,
             )
+            stop_event.set()
+            with self._lock:
+                self._active_session_id = None
+                self._last_heartbeat_at = None
             status = dict(self._status)
             if auto_review and status.get("state") == "claimed" and status.get("task_id"):
                 self._review_claimed_task(str(status["task_id"]))
             with self._lock:
                 state = self._status.get("state")
-                if state not in {"blocked_in_progress", "claimed", "stopped", "error"}:
+                if state not in {
+                    "blocked_in_progress",
+                    "claimed",
+                    "stopped",
+                    "stopped_inactive",
+                    "stopping_inactive",
+                    "error",
+                }:
                     self._status = {**self._status, "state": "finished"}
         except Exception as exc:
             self._last_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             self._emit("ERROR " + self._last_error)
             with self._lock:
                 self._status = {**self._status, "state": "error", "error": self._last_error}
+        finally:
+            with self._lock:
+                self._active_session_id = None
+                self._last_heartbeat_at = None
 
     def start(self, config: dict[str, Any]) -> dict[str, Any]:
         OUTPUTS.mkdir(parents=True, exist_ok=True)
@@ -432,15 +531,7 @@ class MonitorController:
         review_mode, mode_config, campaign_id = dashboard_monitor_settings(config)
         batch_regex = dashboard_batch_regex(config, mode_config)
         compile_batch_regex(batch_regex)
-        tag_count_min = optional_int(config.get("tagCountMin"), "Tag count min")
-        tag_count_max = optional_int(config.get("tagCountMax"), "Tag count max")
-        raw_tag_count = config.get("tagCount")
-        if raw_tag_count not in (None, ""):
-            if tag_count_min is not None or tag_count_max is not None:
-                raise ValueError("Use either Tag count or a Tag count range, not both.")
-            tag_count_min = tag_count_max = optional_int(raw_tag_count, "Tag count")
-        if tag_count_min is not None and tag_count_max is not None and tag_count_max < tag_count_min:
-            raise ValueError("Tag count max must be >= tag count min.")
+        tag_count_min, tag_count_max = dashboard_tag_count_bounds(config, mode_config)
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
         auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
@@ -466,6 +557,9 @@ class MonitorController:
         with self._lock:
             existing = self._thread if self._running_unlocked() else None
             if existing:
+                self._stop_reason = "restart"
+                self._active_session_id = None
+                self._last_heartbeat_at = None
                 self._stop_event.set()
                 self._status = {**self._status, "state": "stopping"}
 
@@ -478,6 +572,8 @@ class MonitorController:
         clean_runtime_files()
 
         stop_event = threading.Event()
+        session_id = uuid.uuid4().hex
+        heartbeat_at = time.monotonic()
         thread = threading.Thread(
             target=self._run,
             args=(monitor_config, stop_event, auto_review),
@@ -488,6 +584,9 @@ class MonitorController:
             self._stop_event = stop_event
             self._thread = thread
             self._last_error = ""
+            self._stop_reason = ""
+            self._active_session_id = session_id
+            self._last_heartbeat_at = heartbeat_at
             self._status = {
                 "state": "starting",
                 "review_mode": mode_config["id"],
@@ -498,23 +597,60 @@ class MonitorController:
                 "batch_regex": batch_regex,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
                 "auto_review": auto_review,
+                **self._session_fields_unlocked(heartbeat_at),
             }
         thread.start()
-        return {"started": True, "worker_id": thread.ident}
+        watchdog = threading.Thread(
+            target=self._watch_active_session,
+            args=(session_id, stop_event),
+            name="FeatherMonitorHeartbeatWatchdog",
+            daemon=True,
+        )
+        watchdog.start()
+        return {
+            "started": True,
+            "worker_id": thread.ident,
+            "session_id": session_id,
+            "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
+        }
+
+    def heartbeat(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            running = self._running_unlocked()
+            if (
+                not running
+                or not session_id
+                or session_id != self._active_session_id
+                or self._stop_event.is_set()
+            ):
+                return {"active": False, "running": running, "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS}
+            now = time.monotonic()
+            self._last_heartbeat_at = now
+            self._status = {**self._status, **self._session_fields_unlocked(now)}
+            return {
+                "active": True,
+                "running": running,
+                "session_id": session_id,
+                "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
+            }
 
     def stop(self) -> bool:
         with self._lock:
             if not self._running_unlocked():
                 return False
+            self._stop_reason = "manual"
+            self._active_session_id = None
+            self._last_heartbeat_at = None
             self._stop_event.set()
             self._status = {**self._status, "state": "stopping"}
             return True
 
     def state(self) -> dict[str, Any]:
         with self._lock:
+            self._stop_inactive_session_unlocked()
             running = self._running_unlocked()
             worker_id = self._thread.ident if self._thread else None
-            status = dict(self._status)
+            status = {**self._status, **self._session_fields_unlocked()}
             last_error = self._last_error
             if status.get("campaign_id") and not status.get("campaign_name"):
                 status = {**status, "campaign_name": campaign_name(str(status["campaign_id"]))}
@@ -554,6 +690,10 @@ def start_monitor(config: dict[str, Any]) -> dict[str, Any]:
 
 def stop_monitor() -> bool:
     return MONITOR.stop()
+
+
+def heartbeat_monitor(session_id: str) -> dict[str, Any]:
+    return MONITOR.heartbeat(session_id)
 
 
 def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
@@ -617,6 +757,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/stop":
                 stopped = stop_monitor()
                 write_json(self, 200, {"ok": True, "stopped": stopped, "state": dashboard_state()})
+                return
+            if self.path == "/api/heartbeat":
+                payload = read_json_body(self)
+                session_id = str(payload.get("sessionId") or "").strip()
+                write_json(self, 200, {"ok": True, **heartbeat_monitor(session_id)})
                 return
             if self.path == "/api/test-batch-regex":
                 payload = read_json_body(self)

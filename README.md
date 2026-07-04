@@ -38,16 +38,18 @@ work. Do not share copied cURL files, cookies, logs, or saved task JSON.
 
 ## One-Click Windows Setup
 
-On a fresh Windows computer, copy or clone this repo, then run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
-```
-
-Or double-click:
+On a fresh Windows computer, copy or clone this repo, then double-click this
+file in the repo root:
 
 ```text
-scripts\install-windows.cmd
+setup.cmd
+```
+
+That is the normal setup path. It installs what is missing, creates the local
+Python environment, starts the dashboard, and opens:
+
+```text
+http://127.0.0.1:8000/dashboard.html
 ```
 
 The setup script:
@@ -56,9 +58,16 @@ The setup script:
 - Creates `.venv` in the repo.
 - Installs the package and dependencies with `pip install -e .`.
 - Adds `feather` and `Start-Feather` commands to your PowerShell profile.
-- Starts the dashboard and opens `http://127.0.0.1:8000/dashboard.html`.
+- Starts the dashboard.
 
-After setup, open a new PowerShell and start the dashboard with:
+After setup, start the dashboard again by double-clicking `start-feather.cmd`.
+From PowerShell, run:
+
+```powershell
+.\start-feather.cmd
+```
+
+Or open a new PowerShell and run:
 
 ```powershell
 feather
@@ -67,10 +76,10 @@ feather
 If you do not want setup to edit your PowerShell profile or start the dashboard:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -NoProfileCommand -NoStart
+.\setup.cmd -NoProfileCommand -NoStart
 ```
 
-Install dependencies from the repo root:
+Manual dependency install, only if you are not using `setup.cmd`:
 
 ```powershell
 pip install -e .
@@ -94,11 +103,15 @@ https://feather.openai.com/api/v2/tasks/search
 ```
 
 5. Choose `Copy as cURL`.
-6. Start the local dashboard:
+6. Start the local dashboard if it is not already open:
 
 ```powershell
-python -m feather_auto.dashboard_server --port 8000
+.\start-feather.cmd
 ```
+
+The direct PowerShell equivalent is `feather` after setup, or
+`python -m feather_auto.dashboard_server --port 8000` from an activated
+environment.
 
 On startup, the dashboard checks the configured Git upstream for new commits. If
 the local branch is behind and the worktree is clean, it pulls the latest commit
@@ -226,8 +239,9 @@ Feather comments.
 
 The dashboard has two workflow presets:
 
-- `Aesthetic Ranking`: uses the known ranking campaign, keeps `Aesthetics? Preferences`
-  as the default batch regex, and leaves auto review off by default.
+- `Aesthetic Ranking`: uses the known ranking campaign, keeps `Aesthetic`
+  as the default batch regex, sets Tag max to `8`, and leaves auto review off
+  by default.
 - `Content Grading`: uses the known content-grading campaign, leaves batch
   regex blank so ranking-specific filters do not hide tasks, and turns auto
   review on by default.
@@ -255,6 +269,11 @@ Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
 campaign. If one exists, it stops without claiming and shows a blocking alert.
 
+When started from the dashboard, the worker also requires a live dashboard
+session heartbeat. If the dashboard page is closed or disconnected for about
+20 seconds, the server stops the worker so search and claim cannot continue in
+the background.
+
 ## Dashboard State Model
 
 The dashboard server owns a background worker thread. It does not start a
@@ -270,6 +289,8 @@ Main states:
   in-progress task
 - `claim_failed_continuing`: claim attempt failed, monitor continues
 - `claimed`: a task was successfully claimed and the worker stopped
+- `stopped_inactive`: the dashboard session heartbeat was lost, so the worker
+  stopped before continuing background search or claim
 - `error`: unrecoverable error
 
 When the main state is `monitoring`, the `phase` field gives the lower-level
@@ -312,7 +333,7 @@ The selected campaign id is sent into the same monitor logic used by the CLI.
 Common filter:
 
 ```text
-Aesthetics? Preferences
+Aesthetic
 ```
 
 When `--batch-regex` or the dashboard batch regex field is set, the monitor
@@ -321,7 +342,7 @@ tasks belonging to matching active batches.
 
 Supported CLI filters:
 
-- `--batch-regex="Aesthetics? Preferences"`
+- `--batch-regex="Aesthetic"`
 - `--batch-name slides-teacher-master-spud-stage2-r4-resume240-raw-creation`
 - `--batch-id 4905bfbb-d090-48be-8db8-b85267348a80`
 
@@ -347,43 +368,43 @@ Dashboard usage is recommended, but the CLI remains useful for one-off tests.
 Observe mode:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --curl-file my_feather_request.curl.txt
 ```
 
 Observe once and exit:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --once --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --once --curl-file my_feather_request.curl.txt
 ```
 
 Open the first matching task:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --open --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --open --curl-file my_feather_request.curl.txt
 ```
 
 Claim the first matching task:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt
 ```
 
 Claim only tasks with 4 through 8 tags:
 
 ```powershell
-python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetics? Preferences" --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
 ```
 
 Use randomized polling intervals:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt
 ```
 
 Write live logs and status JSON:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetics? Preferences" --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
 ```
 
 Watch the log:

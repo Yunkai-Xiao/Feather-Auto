@@ -20,6 +20,9 @@ BASE_URL = "https://feather.openai.com"
 SEARCH_URL = f"{BASE_URL}/api/v2/tasks/search"
 WHOAMI_URL = f"{BASE_URL}/api/v2/users/whoami"
 CLIENT_GIT_HASH = "befa13b162c"
+REQUEST_TIMEOUT_SECONDS = 10
+SAFE_REQUEST_RETRIES = 2
+SAFE_REQUEST_RETRY_DELAY_SECONDS = 0.75
 Emit = Callable[..., None]
 StatusCallback = Callable[[dict[str, Any]], None]
 
@@ -136,6 +139,30 @@ def write_status_payload(path: str | None, payload: dict[str, Any]) -> None:
 
 def write_status(path: str | None, **status: Any) -> None:
     write_status_payload(path, status_payload(**status))
+
+
+def request_with_retries(
+    method: str,
+    url: str,
+    *,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+    retries: int = SAFE_REQUEST_RETRIES,
+    retry_delay: float = SAFE_REQUEST_RETRY_DELAY_SECONDS,
+    **kwargs: Any,
+) -> requests.Response:
+    last_error: requests.exceptions.RequestException | None = None
+    for attempt in range(retries + 1):
+        try:
+            return requests.request(method, url, timeout=timeout, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt >= retries:
+                raise
+            time.sleep(retry_delay * (attempt + 1))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("request retry loop exited without a response")
 
 
 def read_clipboard() -> str:
@@ -258,7 +285,7 @@ def nested_values(value: Any):
 
 
 def fetch_batch_refs(headers: dict[str, str], campaign_id: str) -> list[dict[str, Any]]:
-    response = requests.get(task_batch_refs_url(campaign_id), headers=headers, timeout=20)
+    response = request_with_retries("GET", task_batch_refs_url(campaign_id), headers=headers)
     response.raise_for_status()
     data = response.json()
     return data.get("task_batch_refs", []) if isinstance(data, dict) else []
@@ -513,11 +540,11 @@ def task_url(task_id: str) -> str:
 
 
 def poll_once(headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         SEARCH_URL,
         headers=headers,
         data=json.dumps(payload, separators=(",", ":")),
-        timeout=20,
     )
     if response.status_code in (401, 403):
         raise RuntimeError(f"auth failed: HTTP {response.status_code} {response.text[:160]}")
@@ -544,7 +571,7 @@ def claim_task(headers: dict[str, str], task_id: str) -> requests.Response:
         f"{BASE_URL}/api/graphql",
         headers=headers,
         data=json.dumps(claim_payload(task_id), separators=(",", ":")),
-        timeout=20,
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     if response.status_code in (401, 403):
         raise RuntimeError(f"auth failed during claim: HTTP {response.status_code} {response.text[:160]}")
@@ -552,7 +579,7 @@ def claim_task(headers: dict[str, str], task_id: str) -> requests.Response:
 
 
 def current_user(headers: dict[str, str]) -> dict[str, Any]:
-    response = requests.get(WHOAMI_URL, headers=headers, timeout=20)
+    response = request_with_retries("GET", WHOAMI_URL, headers=headers)
     response.raise_for_status()
     return response.json().get("user", {})
 
@@ -896,26 +923,50 @@ def run_monitor(
             return 0
 
         now = time.strftime("%H:%M:%S")
+        poll_errors: list[tuple[str, requests.exceptions.RequestException]] = []
         if config.batch_name or batch_regex:
-            allowed_batch_refs, search_payloads = resolve_batch_searches(
-                search_headers,
-                config.campaign_id,
-                payload,
-                config.batch_id,
-                config.batch_name,
-                batch_regex,
-            )
-            current_batch_search_ids = batch_search_id_list(search_payloads)
-            batch_signature = tuple(current_batch_search_ids)
-            if batch_signature != last_batch_signature:
-                emit_batch_targets(allowed_batch_refs, search_payloads)
-                last_batch_signature = batch_signature
+            try:
+                allowed_batch_refs, search_payloads = resolve_batch_searches(
+                    search_headers,
+                    config.campaign_id,
+                    payload,
+                    config.batch_id,
+                    config.batch_name,
+                    batch_regex,
+                )
+                current_batch_search_ids = batch_search_id_list(search_payloads)
+                batch_signature = tuple(current_batch_search_ids)
+                if batch_signature != last_batch_signature:
+                    emit_batch_targets(allowed_batch_refs, search_payloads)
+                    last_batch_signature = batch_signature
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if config.once:
+                    raise
+                poll_errors.append(("batch_refs", exc))
+                emit(
+                    f"[{now}] {recoverable_poll_error_name(exc)} target=batch_refs "
+                    f"attempts={SAFE_REQUEST_RETRIES + 1} timeout={REQUEST_TIMEOUT_SECONDS}s "
+                    f"using_previous_batch_filters={len(current_batch_search_ids)} error={exc}",
+                    flush=True,
+                )
 
         tasks: list[dict[str, Any]] = []
         response_by_task_id: dict[str, dict[str, Any]] = {}
         seen_poll_task_ids: set[str] = set()
-        for _batch_id, search_payload in search_payloads:
-            data = poll_once(search_headers, search_payload)
+        for batch_id, search_payload in search_payloads:
+            try:
+                data = poll_once(search_headers, search_payload)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if config.once:
+                    raise
+                poll_errors.append((batch_id or "all_batches", exc))
+                emit(
+                    f"[{now}] {recoverable_poll_error_name(exc)} target=tasks "
+                    f"batch_id={batch_id or '*'} attempts={SAFE_REQUEST_RETRIES + 1} "
+                    f"timeout={REQUEST_TIMEOUT_SECONDS}s error={exc}",
+                    flush=True,
+                )
+                continue
             for task in data.get("tasks", []):
                 task_id = str(task.get("id") or "").strip()
                 if task_id:
@@ -927,9 +978,15 @@ def run_monitor(
         emit(f"[{now}] tasks={len(tasks)} batch_searches={len(search_payloads)}", flush=True)
         if tasks:
             emit_task_tag_counts(tasks, emit)
+        poll_error_fields: dict[str, Any] = {}
+        if poll_errors:
+            poll_error_fields = {
+                "poll_error_count": len(poll_errors),
+                "last_error": str(poll_errors[-1][1])[:500],
+            }
         update_status(
             state="monitoring",
-            phase="polling",
+            phase="polling_with_errors" if poll_errors else "polling",
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_regex=batch_regex,
@@ -938,6 +995,7 @@ def run_monitor(
             server_batch_filters=current_batch_search_ids,
             unclaimed_count=len(tasks),
             last_poll=now,
+            **poll_error_fields,
         )
 
         for task in tasks:
@@ -1001,6 +1059,21 @@ def run_monitor(
             save_found(save_path, task, response_by_task_id.get(str(task_id), {"tasks": tasks}))
             if save_path:
                 emit(f"SAVED {save_path}", flush=True)
+
+            if stop_requested():
+                emit("STOPPED", flush=True)
+                update_status(
+                    state="stopped",
+                    campaign_id=config.campaign_id,
+                    claim=config.claim,
+                    batch_regex=batch_regex,
+                    tag_count_filter=tag_count_filter,
+                    active_batch_matches=len(allowed_batch_refs),
+                    server_batch_filters=current_batch_search_ids,
+                    unclaimed_count=len(tasks),
+                    last_poll=now,
+                )
+                return 0
 
             if config.claim:
                 claim_headers = build_headers(
@@ -1070,7 +1143,7 @@ def run_monitor(
         emit(f"SLEEP {delay:.2f}s", flush=True)
         update_status(
             state="monitoring",
-            phase="sleeping",
+            phase="sleeping_after_errors" if poll_errors else "sleeping",
             campaign_id=config.campaign_id,
             claim=config.claim,
             batch_regex=batch_regex,
@@ -1080,6 +1153,7 @@ def run_monitor(
             unclaimed_count=len(tasks),
             next_sleep_seconds=round(delay, 2),
             last_poll=now,
+            **poll_error_fields,
         )
         if stop_event is not None:
             if stop_event.wait(delay):
@@ -1098,6 +1172,12 @@ def run_monitor(
                 return 0
         else:
             time.sleep(delay)
+
+
+def recoverable_poll_error_name(exc: requests.exceptions.RequestException) -> str:
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "POLL_TIMEOUT"
+    return "POLL_REQUEST_FAILED"
 
 
 def config_from_args(args: argparse.Namespace) -> MonitorConfig:

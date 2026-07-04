@@ -12,6 +12,7 @@ $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $venvDir = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 $startScript = Join-Path $scriptDir "start-feather.ps1"
+$startCmd = Join-Path $repoRoot "start-feather.cmd"
 
 Set-Location $repoRoot
 
@@ -187,6 +188,7 @@ if (-not $NoProfileCommand) {
 
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
+Write-Host "Start later by double-clicking: $startCmd"
 Write-Host "Start later with: feather"
 Write-Host "Or run directly: powershell -ExecutionPolicy Bypass -File `"$startScript`""
 
