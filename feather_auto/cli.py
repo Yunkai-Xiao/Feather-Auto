@@ -240,6 +240,7 @@ def request_parts_from_curl(curl_text: str, campaign_id: str, page_size: int) ->
 
     if isinstance(copied_payload, dict) and copied_payload.get("campaign_id"):
         copied_payload["campaign_id"] = campaign_id or copied_payload["campaign_id"]
+        copied_payload["page"] = 0
         copied_payload["page_size"] = page_size
         copied_payload["workflow_statuses"] = ["unclaimed"]
         return cookie, copied_payload

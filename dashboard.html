@@ -94,6 +94,7 @@
         padding: 16px;
         display: grid;
         grid-template-columns: 380px minmax(0, 1fr);
+        align-items: start;
         gap: 16px;
       }
 
@@ -109,6 +110,47 @@
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
+      }
+
+      .collapsible-panel details {
+        border-radius: var(--radius);
+      }
+
+      .collapsible-panel summary {
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .collapsible-panel summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .collapsible-panel summary::after {
+        content: "+";
+        display: inline-grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        color: var(--muted);
+        font-weight: 800;
+      }
+
+      .collapsible-panel details[open] summary::after {
+        content: "-";
+      }
+
+      .collapsible-panel details:not([open]) .panel-header {
+        border-bottom: 0;
+      }
+
+      .collapsible-panel textarea {
+        min-height: 120px;
+      }
+
+      .collapsible-panel .field textarea {
+        min-height: 96px;
       }
 
       .panel-header {
@@ -551,6 +593,147 @@
         font-weight: 600;
       }
 
+      .claim-result {
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-subtle);
+        padding: 10px 12px;
+      }
+
+      .claim-result.success {
+        border-color: rgba(21, 128, 61, 0.35);
+        background: #f0fdf4;
+      }
+
+      .claim-result.warning {
+        border-color: rgba(180, 83, 9, 0.35);
+        background: #fffbeb;
+      }
+
+      .claim-result.danger {
+        border-color: rgba(185, 28, 28, 0.35);
+        background: #fef2f2;
+      }
+
+      .claim-result-title {
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .claim-result-detail {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+      }
+
+      .candidate-table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 12px;
+      }
+
+      .candidate-table th,
+      .candidate-table td {
+        padding: 9px 12px;
+        border-top: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .candidate-table th {
+        color: var(--muted);
+        background: #fbfcfe;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .candidate-table th:nth-child(1) {
+        width: 42%;
+      }
+
+      .candidate-table th:nth-child(2) {
+        width: 96px;
+      }
+
+      .candidate-table th:nth-child(3) {
+        width: 26%;
+      }
+
+      .candidate-table th:nth-child(4) {
+        width: 190px;
+      }
+
+      .candidate-title {
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.35;
+      }
+
+      .candidate-id {
+        margin-top: 3px;
+        color: var(--muted);
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.35;
+        word-break: break-all;
+      }
+
+      .tag-count {
+        font-weight: 800;
+      }
+
+      .decision-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: #ffffff;
+        padding: 3px 7px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.25;
+      }
+
+      .decision-badge.eligible,
+      .decision-badge.claimed {
+        border-color: rgba(21, 128, 61, 0.35);
+        background: #f0fdf4;
+        color: var(--success);
+      }
+
+      .decision-badge.skipped,
+      .decision-badge.pending {
+        border-color: rgba(180, 83, 9, 0.35);
+        background: #fffbeb;
+        color: var(--warning);
+      }
+
+      .decision-badge.failed,
+      .decision-badge.blocked {
+        border-color: rgba(185, 28, 28, 0.35);
+        background: #fef2f2;
+        color: var(--danger);
+      }
+
+      .empty-row td {
+        color: var(--muted);
+        font-weight: 650;
+      }
+
       .log-panel {
         min-height: 0;
       }
@@ -583,8 +766,8 @@
       }
 
       .log {
-        min-height: 520px;
-        max-height: calc(100vh - 315px);
+        min-height: 240px;
+        max-height: 340px;
         overflow: auto;
         border-radius: 0 0 var(--radius) var(--radius);
         background: var(--code-bg);
@@ -724,6 +907,7 @@
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
                 <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
                 <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
+                <label class="switch"><span>Keep running in background</span><input id="allowBackgroundRun" type="checkbox" checked /></label>
               </div>
 
               <div class="action-grid">
@@ -735,36 +919,40 @@
             </div>
           </section>
 
-          <section class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">Request cURL</h2>
-              <span class="small" id="curlSaved">-</span>
-            </div>
-            <div class="panel-body">
-              <textarea id="curlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/v2/tasks/search' ..."></textarea>
-              <div class="curl-check" id="curlCheck">
-                <div class="curl-check-title" id="curlCheckTitle">Paste a task-search cURL to validate it.</div>
-                <ul id="curlCheckList"></ul>
+          <section class="panel collapsible-panel">
+            <details>
+              <summary class="panel-header">
+                <h2 class="panel-title">Request cURL</h2>
+                <span class="small" id="curlSaved">-</span>
+              </summary>
+              <div class="panel-body">
+                <textarea id="curlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/v2/tasks/search' ..."></textarea>
+                <div class="curl-check" id="curlCheck">
+                  <div class="curl-check-title" id="curlCheckTitle">Paste a task-search cURL to validate it.</div>
+                  <ul id="curlCheckList"></ul>
+                </div>
               </div>
-            </div>
+            </details>
           </section>
 
-          <section class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">GraphQL templates</h2>
-              <span class="small">for slide download</span>
-            </div>
-            <div class="panel-body">
-              <div class="field">
-                <label for="redirectCurlText">TaskOrStagecraftRedirect cURL</label>
-                <textarea id="redirectCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
+          <section class="panel collapsible-panel">
+            <details>
+              <summary class="panel-header">
+                <h2 class="panel-title">GraphQL templates</h2>
+                <span class="small">for slide download</span>
+              </summary>
+              <div class="panel-body">
+                <div class="field">
+                  <label for="redirectCurlText">TaskOrStagecraftRedirect cURL</label>
+                  <textarea id="redirectCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
+                </div>
+                <div class="field">
+                  <label for="conversationCurlText">FetchConversationWidget cURL</label>
+                  <textarea id="conversationCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
+                </div>
+                <button id="saveGraphqlCurls">Save GraphQL templates</button>
               </div>
-              <div class="field">
-                <label for="conversationCurlText">FetchConversationWidget cURL</label>
-                <textarea id="conversationCurlText" spellcheck="false" placeholder="curl 'https://feather.openai.com/api/graphql' ..."></textarea>
-              </div>
-              <button id="saveGraphqlCurls">Save GraphQL templates</button>
-            </div>
+            </details>
           </section>
         </aside>
 
@@ -801,10 +989,38 @@
 
           <section class="panel">
             <div class="panel-header">
-              <h2 class="panel-title">Current task</h2>
+              <h2 class="panel-title">Seen tasks</h2>
+              <span class="small" id="seenTasksMeta">waiting</span>
+            </div>
+            <div class="table-wrap">
+              <table class="candidate-table">
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Tags</th>
+                    <th>Batch</th>
+                    <th>Decision</th>
+                  </tr>
+                </thead>
+                <tbody id="seenTasksBody">
+                  <tr class="empty-row">
+                    <td colspan="4">Waiting for the next poll.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Claim result</h2>
               <span class="small" id="campaignView">-</span>
             </div>
             <div class="panel-body">
+              <div class="claim-result" id="claimResult">
+                <div class="claim-result-title">No claim yet</div>
+                <div class="claim-result-detail">Waiting for an eligible task.</div>
+              </div>
               <div class="task-grid">
                 <div class="kv">
                   <span class="label">Task id</span>
@@ -846,7 +1062,7 @@
 
           <section class="panel log-panel">
             <div class="panel-header">
-              <h2 class="panel-title">Event log</h2>
+              <h2 class="panel-title">Debug log</h2>
               <span class="small" id="logMeta">-</span>
             </div>
             <div class="log-body">
@@ -1014,9 +1230,11 @@
       function modeText(status) {
         const claim = Boolean(status.claim ?? $("claim").checked);
         const open = $("openTask").checked;
-        if (claim) return "claim";
-        if (open) return "open";
-        return "observe";
+        const background = Boolean(status.allow_background_run ?? $("allowBackgroundRun").checked);
+        const suffix = background ? " background" : "";
+        if (claim) return `claim${suffix}`;
+        if (open) return `open${suffix}`;
+        return `observe${suffix}`;
       }
 
       function reviewText(status) {
@@ -1114,6 +1332,239 @@
       function batchText(batch) {
         if (!batch) return "-";
         return batch.task_batch_name || batch.task_batch_id || JSON.stringify(batch);
+      }
+
+      function pathName(path) {
+        return String(path || "").split(/[\\/]/).filter(Boolean).pop() || "";
+      }
+
+      function compactPathSummary(paths) {
+        if (!paths) return { text: "", title: "" };
+        const text = [
+          paths.log ? `log: ${pathName(paths.log)}` : "",
+          paths.status ? `status: ${pathName(paths.status)}` : "",
+          paths.review_output ? `review: ${pathName(paths.review_output)}` : "",
+        ].filter(Boolean).join(" | ");
+        const title = [
+          paths.log ? `Log: ${paths.log}` : "",
+          paths.status ? `Status: ${paths.status}` : "",
+          paths.review_output ? `Review output: ${paths.review_output}` : "",
+        ].filter(Boolean).join("\n");
+        return { text, title };
+      }
+
+      function parseOptionalNumber(value) {
+        if (value == null || value === "" || value === "unknown") return null;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+      }
+
+      function tagFilter(status) {
+        const filter = status.tag_count_filter || {};
+        return {
+          min: parseOptionalNumber(filter.min),
+          max: parseOptionalNumber(filter.max),
+        };
+      }
+
+      function parseTaskTagsLine(line) {
+        const match = line.match(/^TASK_TAGS\s+(\d+)\/(\d+)\s+(\S+)\s+tag_count=(\S+)\s+batch_name=(.*?)\s+title=(.*)$/);
+        if (!match) return null;
+        const tagCount = parseOptionalNumber(match[4]);
+        return {
+          index: Number(match[1]),
+          total: Number(match[2]),
+          id: match[3],
+          tagCount,
+          tagLabel: tagCount == null ? match[4] : String(tagCount),
+          batch: match[5] || "-",
+          title: match[6] || "(untitled)",
+        };
+      }
+
+      function parseLatestPoll(logText) {
+        const lines = cleanLog(logText).split(/\r?\n/);
+        let poll = null;
+        let pollIndex = -1;
+        for (let index = 0; index < lines.length; index += 1) {
+          const match = lines[index].match(/^\[(\d\d:\d\d:\d\d)\]\s+tasks=(\d+)\s+batch_searches=(\d+)/);
+          if (match) {
+            poll = {
+              time: match[1],
+              total: Number(match[2]),
+              batchSearches: Number(match[3]),
+              tasks: [],
+            };
+            pollIndex = index;
+          }
+        }
+        if (!poll) return { time: "", total: null, batchSearches: null, tasks: [] };
+        for (let index = pollIndex + 1; index < lines.length; index += 1) {
+          if (/^\[\d\d:\d\d:\d\d\]\s+tasks=/.test(lines[index])) break;
+          const task = parseTaskTagsLine(lines[index]);
+          if (task) poll.tasks.push(task);
+        }
+        return poll;
+      }
+
+      function taskDecision(task, status) {
+        const state = status.state || "";
+        if (task.id && status.task_id === task.id) {
+          if (state === "claimed") return { label: "Claimed", className: "claimed", eligible: true };
+          if (state === "claim_failed_continuing") return { label: "Claim failed", className: "failed", eligible: true };
+          if (state === "blocked_in_progress") return { label: "Blocked", className: "blocked", eligible: true };
+          if (state === "found") return { label: "Found", className: "pending", eligible: true };
+        }
+
+        const filter = tagFilter(status);
+        if (task.tagCount == null) {
+          return { label: "Tag count unknown", className: "pending", eligible: false };
+        }
+        if (filter.min != null && task.tagCount < filter.min) {
+          return { label: `Skipped: ${task.tagCount} < min ${filter.min}`, className: "skipped", eligible: false };
+        }
+        if (filter.max != null && task.tagCount > filter.max) {
+          return { label: `Skipped: ${task.tagCount} > max ${filter.max}`, className: "skipped", eligible: false };
+        }
+        return { label: status.claim === false ? "Visible by tag count" : "Eligible by tag count", className: "eligible", eligible: true };
+      }
+
+      function renderSeenTasks(snapshot, status) {
+        const body = $("seenTasksBody");
+        body.innerHTML = "";
+        const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+        const decisions = tasks.map((task) => taskDecision(task, status));
+        const eligibleCount = decisions.filter((decision) => decision.eligible).length;
+        const total = snapshot.total == null ? tasks.length : snapshot.total;
+        const meta = snapshot.time
+          ? `${tasks.length}/${total} shown from ${snapshot.time} | ${eligibleCount} eligible`
+          : "waiting for poll";
+        setText("seenTasksMeta", meta);
+
+        if (!tasks.length) {
+          const row = document.createElement("tr");
+          row.className = "empty-row";
+          const cell = document.createElement("td");
+          cell.colSpan = 4;
+          cell.textContent = snapshot.time ? "No tasks seen in the latest poll." : "Waiting for the next poll.";
+          row.appendChild(cell);
+          body.appendChild(row);
+          return;
+        }
+
+        tasks.forEach((task, index) => {
+          const decision = decisions[index];
+          const row = document.createElement("tr");
+
+          const taskCell = document.createElement("td");
+          const title = document.createElement("div");
+          title.className = "candidate-title";
+          title.textContent = task.title;
+          const id = document.createElement("div");
+          id.className = "candidate-id";
+          id.textContent = task.id;
+          taskCell.append(title, id);
+
+          const tagCell = document.createElement("td");
+          const tag = document.createElement("span");
+          tag.className = "tag-count";
+          tag.textContent = task.tagLabel;
+          tagCell.appendChild(tag);
+
+          const batchCell = document.createElement("td");
+          batchCell.textContent = task.batch;
+
+          const decisionCell = document.createElement("td");
+          const badge = document.createElement("span");
+          badge.className = `decision-badge ${decision.className}`;
+          badge.textContent = decision.label;
+          decisionCell.appendChild(badge);
+
+          row.append(taskCell, tagCell, batchCell, decisionCell);
+          body.appendChild(row);
+        });
+      }
+
+      function claimResult(status, snapshot) {
+        const state = status.state || "stopped";
+        const taskParts = [
+          status.title || "",
+          status.task_id ? `task ${status.task_id}` : "",
+          status.tag_count != null ? `tag count ${status.tag_count}` : "",
+          batchText(status.batch) !== "-" ? `batch ${batchText(status.batch)}` : "",
+        ].filter(Boolean);
+        if (state === "claimed") {
+          return {
+            tone: "success",
+            title: "Claimed",
+            detail: [...taskParts, status.saved ? `saved ${status.saved}` : ""].filter(Boolean).join(" | ") || "Task was claimed.",
+          };
+        }
+        if (state === "claim_failed_continuing") {
+          return {
+            tone: "warning",
+            title: "Claim failed, still monitoring",
+            detail: taskParts.join(" | ") || "The monitor will keep watching for another eligible task.",
+          };
+        }
+        if (state === "blocked_in_progress") {
+          return {
+            tone: "danger",
+            title: "Blocked by existing in-progress task",
+            detail: status.blocking_reason || taskParts.join(" | ") || "Finish or release the existing task before claiming.",
+          };
+        }
+        if (state === "found") {
+          return {
+            tone: "warning",
+            title: status.claim === false ? "Found task" : "Found eligible task",
+            detail: taskParts.join(" | ") || "A matching task was found.",
+          };
+        }
+        if (state === "error") {
+          return {
+            tone: "danger",
+            title: "Monitor error",
+            detail: status.error || status.last_error || "Check the debug log for details.",
+          };
+        }
+        if (state === "stopped_inactive" || state === "stopping_inactive") {
+          return {
+            tone: "danger",
+            title: "Stopped after dashboard heartbeat was lost",
+            detail: status.stop_reason || "Restart the monitor when ready.",
+          };
+        }
+        if (state === "stopping") {
+          return { tone: "warning", title: "Stopping", detail: "Stop requested; waiting for the worker to finish cleanly." };
+        }
+        if (state === "stopped") {
+          return { tone: "", title: "Stopped", detail: "Start the monitor to watch for tasks." };
+        }
+
+        const seen = Array.isArray(snapshot.tasks) ? snapshot.tasks.length : 0;
+        if (seen) {
+          return {
+            tone: "",
+            title: "No claim yet",
+            detail: `${seen} task${seen === 1 ? "" : "s"} seen in the latest poll; none has been claimed.`,
+          };
+        }
+        return { tone: "", title: "No claim yet", detail: "Waiting for an eligible task." };
+      }
+
+      function renderClaimResult(status, snapshot) {
+        const result = claimResult(status, snapshot);
+        const box = $("claimResult");
+        box.className = `claim-result ${result.tone}`.trim();
+        box.innerHTML = "";
+        const title = document.createElement("div");
+        title.className = "claim-result-title";
+        title.textContent = result.title;
+        const detail = document.createElement("div");
+        detail.className = "claim-result-detail";
+        detail.textContent = result.detail;
+        box.append(title, detail);
       }
 
       function cleanLog(text) {
@@ -1407,6 +1858,7 @@
         const running = latest.running;
         const state = status.state || (running ? "running" : "stopped");
         const phase = status.phase || "-";
+        const pollSnapshot = parseLatestPoll(latest.log_tail);
         updateActiveSession(status, running);
         sendHeartbeat();
 
@@ -1433,10 +1885,14 @@
         setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
         setText("reviewState", reviewText(status));
+        renderSeenTasks(pollSnapshot, status);
+        renderClaimResult(status, pollSnapshot);
         await refreshReviewOutput(status);
 
         $("dot").className = `dot ${state}`;
-        $("paths").textContent = latest.paths ? `${latest.paths.log} | ${latest.paths.status} | ${latest.paths.review_output || ""}` : "";
+        const pathSummary = compactPathSummary(latest.paths);
+        $("paths").textContent = pathSummary.text;
+        $("paths").title = pathSummary.title;
         $("logMeta").textContent = latest.paths?.log || "-";
         $("log").textContent = cleanLog(latest.log_tail);
         $("log").scrollTop = $("log").scrollHeight;
@@ -1465,6 +1921,7 @@
           claim: $("claim").checked,
           openTask: $("openTask").checked,
           autoReview: $("autoReview").checked,
+          allowBackgroundRun: $("allowBackgroundRun").checked,
         };
       }
 

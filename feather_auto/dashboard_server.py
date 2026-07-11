@@ -363,6 +363,7 @@ class MonitorController:
         self._last_error = ""
         self._active_session_id: str | None = None
         self._last_heartbeat_at: float | None = None
+        self._allow_background_run = False
         self._stop_reason = ""
 
     def _running_unlocked(self) -> bool:
@@ -377,10 +378,14 @@ class MonitorController:
             "active_session_id": self._active_session_id,
             "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
             "heartbeat_age_seconds": round(age, 1) if age is not None else None,
+            "allow_background_run": self._allow_background_run,
+            "heartbeat_required": not self._allow_background_run,
             "stop_reason": INACTIVE_SESSION_REASON if self._stop_reason == "inactive_session" else None,
         }
 
     def _stop_inactive_session_unlocked(self, now: float | None = None) -> bool:
+        if self._allow_background_run:
+            return False
         if not self._running_unlocked() or not self._active_session_id or self._last_heartbeat_at is None:
             return False
         now = time.monotonic() if now is None else now
@@ -535,6 +540,7 @@ class MonitorController:
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
         auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
+        allow_background_run = bool(config.get("allowBackgroundRun", False))
         if interval_min < 1:
             raise ValueError("Interval min must be >= 1 second.")
         if interval_max < interval_min:
@@ -585,6 +591,7 @@ class MonitorController:
             self._thread = thread
             self._last_error = ""
             self._stop_reason = ""
+            self._allow_background_run = allow_background_run
             self._active_session_id = session_id
             self._last_heartbeat_at = heartbeat_at
             self._status = {
@@ -597,21 +604,26 @@ class MonitorController:
                 "batch_regex": batch_regex,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
                 "auto_review": auto_review,
+                "allow_background_run": allow_background_run,
                 **self._session_fields_unlocked(heartbeat_at),
             }
         thread.start()
-        watchdog = threading.Thread(
-            target=self._watch_active_session,
-            args=(session_id, stop_event),
-            name="FeatherMonitorHeartbeatWatchdog",
-            daemon=True,
-        )
-        watchdog.start()
+        if allow_background_run:
+            self._emit("BACKGROUND_RUN enabled heartbeat_watchdog_disabled", flush=True)
+        else:
+            watchdog = threading.Thread(
+                target=self._watch_active_session,
+                args=(session_id, stop_event),
+                name="FeatherMonitorHeartbeatWatchdog",
+                daemon=True,
+            )
+            watchdog.start()
         return {
             "started": True,
             "worker_id": thread.ident,
             "session_id": session_id,
             "heartbeat_ttl_seconds": ACTIVE_SESSION_TTL_SECONDS,
+            "allow_background_run": allow_background_run,
         }
 
     def heartbeat(self, session_id: str) -> dict[str, Any]:
