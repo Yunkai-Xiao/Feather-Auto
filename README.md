@@ -9,6 +9,9 @@ scripted checks and debugging.
 ## What It Does
 
 - Polls Feather's task search API with your own logged-in session cookie.
+- Follows task-search pagination for every matching batch instead of only checking the first page.
+- Uses one complete campaign search when it has fewer than four pages; otherwise
+  falls back to complete per-batch searches for the batches matched by the filter.
 - Filters tasks by active batch refs, batch regex, batch name, or batch id.
 - Supports randomized polling intervals.
 - Can run in observe-only mode, open-on-found mode, or claim mode.

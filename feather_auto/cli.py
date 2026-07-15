@@ -23,6 +23,8 @@ CLIENT_GIT_HASH = "befa13b162c"
 REQUEST_TIMEOUT_SECONDS = 10
 SAFE_REQUEST_RETRIES = 2
 SAFE_REQUEST_RETRY_DELAY_SECONDS = 0.75
+MAX_SEARCH_PAGES = 100
+CAMPAIGN_SEARCH_PAGE_THRESHOLD = 4
 Emit = Callable[..., None]
 StatusCallback = Callable[[dict[str, Any]], None]
 
@@ -553,6 +555,105 @@ def poll_once(headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any
     return response.json()
 
 
+def task_page_signature(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
+    return tuple(
+        str(task.get("id") or json.dumps(task, sort_keys=True, default=str))
+        for task in tasks
+    )
+
+
+def poll_all_pages(
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    max_pages: int = MAX_SEARCH_PAGES,
+    first_page: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch every task-search page, stopping safely on an empty or repeated page."""
+    if max_pages < 1:
+        raise ValueError("max_pages must be >= 1")
+
+    page_payload = dict(payload)
+    try:
+        page_number = int(page_payload.get("page", 0))
+    except (TypeError, ValueError):
+        page_number = 0
+    page_payload["page"] = page_number
+
+    pages: list[dict[str, Any]] = []
+    seen_page_signatures: set[tuple[str, ...]] = set()
+
+    pending_first_page = first_page
+    for _ in range(max_pages):
+        if pending_first_page is not None:
+            data = pending_first_page
+            pending_first_page = None
+        else:
+            data = poll_once(headers, page_payload)
+        raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
+        tasks = raw_tasks if isinstance(raw_tasks, list) else []
+        signature = task_page_signature(tasks)
+
+        # A backend that ignores the page parameter must not create an infinite loop
+        # or duplicate the same tasks in the current poll.
+        if signature and signature in seen_page_signatures:
+            break
+        if signature:
+            seen_page_signatures.add(signature)
+        pages.append(data)
+
+        if not tasks:
+            break
+
+        pagination = data.get("pagination") if isinstance(data, dict) else None
+        pagination = pagination if isinstance(pagination, dict) else {}
+        try:
+            page_size = int(pagination.get("page_size", page_payload.get("page_size", len(tasks))))
+        except (TypeError, ValueError):
+            page_size = len(tasks)
+        if page_size < 1 or len(tasks) < page_size:
+            break
+
+        try:
+            response_page = int(pagination.get("page", page_payload["page"]))
+        except (TypeError, ValueError):
+            response_page = int(page_payload["page"])
+        try:
+            total_count = int(pagination["count"])
+        except (KeyError, TypeError, ValueError):
+            total_count = None
+        if total_count is not None and total_count >= 0 and (response_page + 1) * page_size >= total_count:
+            break
+        page_payload = dict(page_payload)
+        page_payload["page"] = response_page + 1
+        if "random_seed" in pagination:
+            page_payload["random_seed"] = pagination["random_seed"]
+
+    return pages
+
+
+def campaign_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build an unscoped campaign search used to choose the cheapest complete scan."""
+    campaign_payload = dict(payload)
+    campaign_payload.pop("task_batch_id", None)
+    campaign_payload.pop("random_seed", None)
+    campaign_payload["page"] = 0
+    return campaign_payload
+
+
+def search_page_count(data: dict[str, Any], payload: dict[str, Any]) -> int | None:
+    """Return the server-reported page count, or None when it cannot be trusted."""
+    pagination = data.get("pagination") if isinstance(data, dict) else None
+    pagination = pagination if isinstance(pagination, dict) else {}
+    try:
+        count = int(pagination["count"])
+        page_size = int(pagination.get("page_size", payload.get("page_size")))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if count < 0 or page_size < 1:
+        return None
+    return (count + page_size - 1) // page_size
+
+
 def claim_payload(task_id: str) -> list[dict[str, Any]]:
     return [
         {
@@ -602,10 +703,10 @@ def verify_task_assignment(headers: dict[str, str], campaign_id: str, page_size:
     ]
     verify_payload["exclude_declined"] = False
     verify_payload["query"] = task_id
-    data = poll_once(headers, verify_payload)
-    for task in data.get("tasks", []):
-        if task.get("id") == task_id:
-            return task
+    for data in poll_all_pages(headers, verify_payload):
+        for task in data.get("tasks", []):
+            if task.get("id") == task_id:
+                return task
     return None
 
 
@@ -629,10 +730,10 @@ def find_current_in_progress_task(
     payload = default_search_payload(campaign_id, max(page_size, 50))
     payload["workflow_statuses"] = ["in_progress"]
     payload["exclude_declined"] = False
-    data = poll_once(headers, payload)
-    for task in data.get("tasks", []):
-        if is_current_user_task(task, user):
-            return task
+    for data in poll_all_pages(headers, payload):
+        for task in data.get("tasks", []):
+            if is_current_user_task(task, user):
+                return task
     return None
 
 
@@ -954,9 +1055,66 @@ def run_monitor(
         tasks: list[dict[str, Any]] = []
         response_by_task_id: dict[str, dict[str, Any]] = {}
         seen_poll_task_ids: set[str] = set()
-        for batch_id, search_payload in search_payloads:
+        page_searches = 0
+        search_mode = "batch"
+        searches_to_run = search_payloads
+        campaign_pages: list[dict[str, Any]] | None = None
+
+        if config.batch_name or batch_regex:
+            probe_payload = campaign_search_payload(payload)
             try:
-                data = poll_once(search_headers, search_payload)
+                probe_data = poll_once(search_headers, probe_payload)
+                page_searches += 1
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if config.once:
+                    raise
+                poll_errors.append(("campaign_probe", exc))
+                emit(
+                    f"[{now}] {recoverable_poll_error_name(exc)} target=tasks "
+                    f"search_mode=campaign_probe attempts={SAFE_REQUEST_RETRIES + 1} "
+                    f"timeout={REQUEST_TIMEOUT_SECONDS}s error={exc}",
+                    flush=True,
+                )
+            else:
+                campaign_page_total = search_page_count(probe_data, probe_payload)
+                if campaign_page_total is not None and campaign_page_total < CAMPAIGN_SEARCH_PAGE_THRESHOLD:
+                    try:
+                        campaign_pages = poll_all_pages(
+                            search_headers,
+                            probe_payload,
+                            first_page=probe_data,
+                        )
+                    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                        if config.once:
+                            raise
+                        poll_errors.append(("campaign_pages", exc))
+                        campaign_pages = None
+                        search_mode = "batch_fallback"
+                        emit(
+                            f"[{now}] {recoverable_poll_error_name(exc)} target=tasks "
+                            f"search_mode=campaign attempts={SAFE_REQUEST_RETRIES + 1} "
+                            f"timeout={REQUEST_TIMEOUT_SECONDS}s falling_back_to=batch error={exc}",
+                            flush=True,
+                        )
+                    else:
+                        search_mode = "campaign"
+                        page_searches += max(0, len(campaign_pages) - 1)
+                        searches_to_run = []
+                else:
+                    page_label = "unknown" if campaign_page_total is None else str(campaign_page_total)
+                    emit(
+                        f"[{now}] search_mode=batch campaign_pages={page_label} "
+                        f"threshold={CAMPAIGN_SEARCH_PAGE_THRESHOLD}",
+                        flush=True,
+                    )
+
+        page_groups: list[tuple[str | None, list[dict[str, Any]]]] = []
+        if campaign_pages is not None:
+            page_groups.append((None, campaign_pages))
+
+        for batch_id, search_payload in searches_to_run:
+            try:
+                page_responses = poll_all_pages(search_headers, search_payload)
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 if config.once:
                     raise
@@ -968,15 +1126,34 @@ def run_monitor(
                     flush=True,
                 )
                 continue
-            for task in data.get("tasks", []):
-                task_id = str(task.get("id") or "").strip()
-                if task_id:
-                    if task_id in seen_poll_task_ids:
+            page_searches += len(page_responses)
+            page_groups.append((batch_id, page_responses))
+
+        for _batch_id, page_responses in page_groups:
+            for data in page_responses:
+                for task in data.get("tasks", []):
+                    if search_mode == "campaign" and not task_matches_filters(
+                        task,
+                        config.batch_id,
+                        config.batch_name,
+                        batch_regex,
+                        allowed_batch_refs,
+                        None,
+                        None,
+                    ):
                         continue
-                    seen_poll_task_ids.add(task_id)
-                    response_by_task_id[task_id] = data
-                tasks.append(task)
-        emit(f"[{now}] tasks={len(tasks)} batch_searches={len(search_payloads)}", flush=True)
+                    task_id = str(task.get("id") or "").strip()
+                    if task_id:
+                        if task_id in seen_poll_task_ids:
+                            continue
+                        seen_poll_task_ids.add(task_id)
+                        response_by_task_id[task_id] = data
+                    tasks.append(task)
+        emit(
+            f"[{now}] tasks={len(tasks)} batch_searches={len(searches_to_run)} "
+            f"page_searches={page_searches} search_mode={search_mode}",
+            flush=True,
+        )
         if tasks:
             emit_task_tag_counts(tasks, emit)
         poll_error_fields: dict[str, Any] = {}
