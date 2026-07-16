@@ -1,10 +1,10 @@
 param(
     [switch]$NoOpen,
-    [switch]$ForceRestart,
-    [int]$Port = 8000
+    [switch]$ForceRestart
 )
 
 $ErrorActionPreference = "Stop"
+$Port = 8001
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
@@ -72,6 +72,36 @@ function Get-DashboardState {
     }
 }
 
+function Stop-LegacyDashboard {
+    $legacyPort = 8000
+    $legacyStateUrl = "http://127.0.0.1:$legacyPort/api/state"
+    try {
+        $state = Invoke-RestMethod -Uri $legacyStateUrl -TimeoutSec 2
+        $runtimeRoot = [string]$state.runtime.repo_root
+        $sameRepo = [string]::Equals(
+            $runtimeRoot.TrimEnd('\'),
+            $repoRoot.TrimEnd('\'),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+        if (-not $sameRepo) {
+            return
+        }
+        $processIds = @(Get-NetTCPConnection -LocalPort $legacyPort -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique)
+        foreach ($processId in $processIds) {
+            if ($processId) {
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($processIds.Count -gt 0) {
+            Write-Host "Stopped legacy Feather dashboard on port $legacyPort." -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 800
+        }
+    } catch {
+        return
+    }
+}
+
 function Test-DashboardRuntime {
     $state = Get-DashboardState
     if ($null -eq $state -or $null -eq $state.runtime) {
@@ -110,6 +140,8 @@ function Stop-FeatherPortProcesses {
         }
     }
 }
+
+Stop-LegacyDashboard
 
 $portOpen = Test-FeatherPort
 $dashboardReady = Test-Dashboard

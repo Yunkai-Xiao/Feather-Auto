@@ -888,24 +888,24 @@
                 </div>
                 <div class="field">
                   <label for="tagCountMax">Tag max</label>
-                  <input id="tagCountMax" type="number" min="0" step="1" value="8" placeholder="Any" />
+                  <input id="tagCountMax" type="number" min="0" step="1" value="9" placeholder="Any" />
                 </div>
               </div>
 
               <div class="row">
                 <div class="field">
                   <label for="intervalMin">Interval min</label>
-                  <input id="intervalMin" type="number" min="1" step="0.1" value="1.2" />
+                  <input id="intervalMin" type="number" min="0.1" step="0.05" value="0.25" />
                 </div>
                 <div class="field">
                   <label for="intervalMax">Interval max</label>
-                  <input id="intervalMax" type="number" min="1" step="0.1" value="3.8" />
+                  <input id="intervalMax" type="number" min="0.1" step="0.05" value="0.75" />
                 </div>
               </div>
 
               <div class="toggle-list">
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
-                <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
+                <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" /></label>
                 <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
                 <label class="switch"><span>Keep running in background</span><input id="allowBackgroundRun" type="checkbox" checked /></label>
               </div>
@@ -1077,9 +1077,10 @@
       <div class="timer-alert-card">
         <div class="timer-alert-kicker">Task claimed</div>
         <h2 class="timer-alert-title" id="timerAlertTitle">Open Insightful timer now</h2>
-        <p class="timer-alert-detail">The task was claimed successfully. Start Insightful tracking before doing any work.</p>
+        <p class="timer-alert-detail">The task was claimed successfully. The alert sound will repeat until you stop it manually. Start Insightful tracking before doing any work.</p>
         <div class="timer-alert-task" id="timerAlertTask">-</div>
         <div class="timer-alert-actions">
+          <button id="stopTimerAlertSound">Stop alert sound</button>
           <button id="ackTimerAlert">Insightful timer is on</button>
         </div>
       </div>
@@ -1103,6 +1104,10 @@
       let titleFlashTimer = null;
       let originalTitle = document.title;
       let activeSessionId = null;
+      let alertAudioContext = null;
+      let claimAlertSoundTimer = null;
+      let claimAlertSoundTaskId = "";
+      let mutedClaimAlertTaskId = "";
 
       const $ = (id) => document.getElementById(id);
 
@@ -1579,12 +1584,31 @@
         return `feather.inProgressBlockAck.${taskId || "unknown"}`;
       }
 
-      function playTimerAlertSound() {
+      function ensureAlertAudioContext() {
         try {
           const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContext) return;
-          const context = new AudioContext();
-          const now = context.currentTime;
+          if (!AudioContext) return null;
+          if (!alertAudioContext || alertAudioContext.state === "closed") {
+            alertAudioContext = new AudioContext();
+          }
+          if (alertAudioContext.state === "suspended") {
+            alertAudioContext.resume().catch(() => {});
+          }
+          return alertAudioContext;
+        } catch {
+          return null;
+        }
+      }
+
+      function primeTimerAlertSound() {
+        ensureAlertAudioContext();
+      }
+
+      function playTimerAlertSound() {
+        try {
+          const context = ensureAlertAudioContext();
+          if (!context || context.state !== "running") return;
+          const now = context.currentTime + 0.02;
           for (let index = 0; index < 5; index += 1) {
             const oscillator = context.createOscillator();
             const gain = context.createGain();
@@ -1597,12 +1621,37 @@
             oscillator.start(now + index * 0.22);
             oscillator.stop(now + index * 0.22 + 0.18);
           }
-          setTimeout(() => context.close().catch(() => {}), 1500);
         } catch {
           // Audio can be blocked until the page has a user gesture.
         }
       }
 
+      function stopClaimAlertSound() {
+        if (claimAlertSoundTimer) {
+          clearInterval(claimAlertSoundTimer);
+          claimAlertSoundTimer = null;
+        }
+        claimAlertSoundTaskId = "";
+      }
+
+      function silenceClaimAlert(taskId) {
+        mutedClaimAlertTaskId = taskId || "unknown";
+        stopClaimAlertSound();
+      }
+
+      function startClaimAlertSound(taskId) {
+        const soundTaskId = taskId || "unknown";
+        if (mutedClaimAlertTaskId === soundTaskId) return;
+        if (claimAlertSoundTimer && claimAlertSoundTaskId === soundTaskId) return;
+        stopClaimAlertSound();
+        claimAlertSoundTaskId = soundTaskId;
+        playTimerAlertSound();
+        claimAlertSoundTimer = setInterval(() => {
+          if (claimAlertSoundTaskId === soundTaskId && mutedClaimAlertTaskId !== soundTaskId) {
+            playTimerAlertSound();
+          }
+        }, 1600);
+      }
       function startTitleFlash(titleText) {
         const urgentTitle = titleText || "OPEN INSIGHTFUL TIMER";
         if (titleFlashTimer && document.body.dataset.flashTitle === urgentTitle) return;
@@ -1625,21 +1674,23 @@
       }
 
       function showTimerAlert(status) {
-        const taskId = status.task_id || "";
+        const taskId = status.task_id || "unknown";
         if (localStorage.getItem(claimAlertKey(taskId))) return;
         $("timerAlertTask").textContent = [
           status.title ? `title: ${status.title}` : "",
-          taskId ? `task: ${taskId}` : "",
+          status.task_id ? `task: ${status.task_id}` : "",
           status.campaign_id ? `campaign: ${status.campaign_id}` : "",
         ].filter(Boolean).join("\n") || "Task claimed.";
         $("timerAlert").classList.add("show");
         startTitleFlash("OPEN INSIGHTFUL TIMER");
         if ($("timerAlert").dataset.soundTaskId !== taskId) {
           $("timerAlert").dataset.soundTaskId = taskId;
-          playTimerAlertSound();
+          mutedClaimAlertTaskId = "";
+          $("stopTimerAlertSound").disabled = false;
+          $("stopTimerAlertSound").textContent = "Stop alert sound";
         }
+        startClaimAlertSound(taskId);
       }
-
       function hideTimerAlert() {
         $("timerAlert").classList.remove("show");
       }
@@ -1987,7 +2038,10 @@
       }
 
       $("refresh").addEventListener("click", () => refresh().catch((error) => setMessage(error.message)));
-      $("start").addEventListener("click", () => start().catch((error) => setMessage(error.message)));
+      $("start").addEventListener("click", () => {
+        primeTimerAlertSound();
+        start().catch((error) => setMessage(error.message));
+      });
       $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
@@ -2004,8 +2058,15 @@
           refresh().catch((error) => setMessage(error.message));
         }
       });
+      $("stopTimerAlertSound").addEventListener("click", () => {
+        const taskId = latest?.status?.task_id || $("timerAlert").dataset.soundTaskId || "unknown";
+        silenceClaimAlert(taskId);
+        $("stopTimerAlertSound").disabled = true;
+        $("stopTimerAlertSound").textContent = "Alert sound stopped";
+      });
       $("ackTimerAlert").addEventListener("click", () => {
         const taskId = latest?.status?.task_id || "unknown";
+        silenceClaimAlert(taskId);
         localStorage.setItem(claimAlertKey(taskId), "1");
         hideTimerAlert();
         stopTitleFlash();

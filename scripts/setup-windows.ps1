@@ -1,8 +1,7 @@
 param(
     [switch]$SkipPythonInstall,
     [switch]$NoStart,
-    [switch]$NoProfileCommand,
-    [int]$Port = 8000
+    [switch]$NoProfileCommand
 )
 
 $ErrorActionPreference = "Stop"
@@ -193,5 +192,5 @@ Write-Host "Start later with: feather"
 Write-Host "Or run directly: powershell -ExecutionPolicy Bypass -File `"$startScript`""
 
 if (-not $NoStart) {
-    & $startScript -Port $Port
+    & $startScript
 }

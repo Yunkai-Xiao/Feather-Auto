@@ -46,6 +46,7 @@ AESTHETIC_RANKING_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
 CONTENT_GRADING_CAMPAIGN_ID = "c2978c67-7bc5-4fde-b4f5-330d0e001a35"
 DEFAULT_CAMPAIGN_ID = AESTHETIC_RANKING_CAMPAIGN_ID
 DEFAULT_REVIEW_MODE = "aesthetic_ranking"
+DASHBOARD_PORT = 8001
 CAMPAIGNS = [
     {
         "id": AESTHETIC_RANKING_CAMPAIGN_ID,
@@ -63,7 +64,7 @@ REVIEW_MODES = [
         "campaign_id": AESTHETIC_RANKING_CAMPAIGN_ID,
         "batch_regex": "Aesthetic",
         "batch_suffix": "-raw-creation",
-        "tag_count_max": 8,
+        "tag_count_max": 9,
         "auto_review": False,
         "custom_campaign": False,
     },
@@ -537,12 +538,12 @@ class MonitorController:
         batch_regex = dashboard_batch_regex(config, mode_config)
         compile_batch_regex(batch_regex)
         tag_count_min, tag_count_max = dashboard_tag_count_bounds(config, mode_config)
-        interval_min = float(config.get("intervalMin") or 1.2)
-        interval_max = float(config.get("intervalMax") or 3.8)
+        interval_min = float(config.get("intervalMin") or 0.25)
+        interval_max = float(config.get("intervalMax") or 0.75)
         auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
         allow_background_run = bool(config.get("allowBackgroundRun", False))
-        if interval_min < 1:
-            raise ValueError("Interval min must be >= 1 second.")
+        if interval_min < 0.1:
+            raise ValueError("Interval min must be >= 0.1 second.")
         if interval_max < interval_min:
             raise ValueError("Interval max must be >= interval min.")
 
@@ -555,7 +556,7 @@ class MonitorController:
             save=str(SAVE_FILE),
             status_file=str(STATUS_FILE),
             claim=bool(config.get("claim", True)),
-            open_task=bool(config.get("openTask", True)),
+            open_task=bool(config.get("openTask", False)),
             tag_count_min=tag_count_min,
             tag_count_max=tag_count_max,
         )
@@ -811,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run the Feather Auto dashboard server.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, choices=[DASHBOARD_PORT], default=DASHBOARD_PORT)
     args = parser.parse_args(argv)
 
     OUTPUTS.mkdir(parents=True, exist_ok=True)

@@ -49,7 +49,7 @@ That is the normal setup path. It installs what is missing, creates the local
 Python environment, starts the dashboard, and opens:
 
 ```text
-http://127.0.0.1:8000/dashboard.html
+http://127.0.0.1:8001/dashboard.html
 ```
 
 The setup script:
@@ -110,7 +110,7 @@ https://feather.openai.com/api/v2/tasks/search
 ```
 
 The direct PowerShell equivalent is `feather` after setup, or
-`python -m feather_auto.dashboard_server --port 8000` from an activated
+`python -m feather_auto.dashboard_server --port 8001` from an activated
 environment.
 
 On startup, the dashboard checks the configured Git upstream for new commits. If
@@ -121,7 +121,7 @@ changes are present, it skips the pull and starts with the current files.
 7. Open:
 
 ```text
-http://127.0.0.1:8000/dashboard.html
+http://127.0.0.1:8001/dashboard.html
 ```
 
 8. Paste the copied cURL into the dashboard, choose settings, then start the
@@ -395,16 +395,16 @@ Claim only tasks with 4 through 8 tags:
 python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --tag-count-min 4 --tag-count-max 8 --claim --curl-file my_feather_request.curl.txt
 ```
 
-Use randomized polling intervals:
+Use randomized target polling periods (request time is subtracted, so a slow request does not add a second full sleep):
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 0.25 --interval-max 0.75 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt
 ```
 
 Write live logs and status JSON:
 
 ```powershell
-python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 1.2 --interval-max 3.8 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
+python -u -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --interval-min 0.25 --interval-max 0.75 --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt --log-file outputs/feather-auto.log --status-file outputs/feather-auto-status.json
 ```
 
 Watch the log:
@@ -417,12 +417,12 @@ Get-Content .\outputs\feather-auto.log -Wait -Tail 80
 
 When claim mode is enabled, the monitor:
 
-1. Queries `whoami`.
-2. Checks for an existing `in_progress` task assigned to the current account.
-3. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
-4. Searches for the task again.
-5. Prints a `VERIFY` line with expected user id/email, assignment fields, and
-   workflow status.
+1. Queries `whoami` and checks once at startup for an existing `in_progress` task.
+2. Polls a global fast lane and all matching batches concurrently over persistent HTTP connections.
+3. Dispatches the GraphQL `UpdateTaskStatus` mutation immediately when any response
+   contains an eligible task, before log, status, or artifact writes.
+4. Trusts a definitive GraphQL success or error response. It only performs the slower
+   follow-up assignment search when the mutation response is ambiguous.
 
 The monitor treats the claim as successful when Feather confirms the task is in
 progress for the current user. On success it prints:
@@ -454,13 +454,13 @@ Do not commit or share these files.
 Make sure the server is running:
 
 ```powershell
-python -m feather_auto.dashboard_server --port 8000
+python -m feather_auto.dashboard_server --port 8001
 ```
 
 Then open:
 
 ```text
-http://127.0.0.1:8000/dashboard.html
+http://127.0.0.1:8001/dashboard.html
 ```
 
 ### Stop does not immediately stop
