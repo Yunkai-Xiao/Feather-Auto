@@ -556,7 +556,7 @@ class MonitorController:
             save=str(SAVE_FILE),
             status_file=str(STATUS_FILE),
             claim=bool(config.get("claim", True)),
-            open_task=bool(config.get("openTask", False)),
+            open_task=bool(config.get("openTask", True)),
             tag_count_min=tag_count_min,
             tag_count_max=tag_count_max,
         )

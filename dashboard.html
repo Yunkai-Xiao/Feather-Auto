@@ -738,6 +738,150 @@
         min-height: 0;
       }
 
+      .log-tabs {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .log-tabs button {
+        min-height: 32px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: #f8fafc;
+        padding: 5px 10px;
+        color: var(--muted);
+        box-shadow: none;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .log-tabs button.active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+        color: #1d4ed8;
+      }
+
+      .log-tab-count {
+        display: inline-flex;
+        min-width: 20px;
+        justify-content: center;
+        margin-left: 4px;
+        border-radius: 999px;
+        background: rgba(37, 99, 235, 0.12);
+        padding: 1px 5px;
+        font-size: 10px;
+      }
+
+      .log-pane[hidden] {
+        display: none !important;
+      }
+
+      .log-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 40px;
+        border-bottom: 1px solid var(--border);
+        background: #fbfcfe;
+        padding: 6px 10px;
+      }
+
+      .log-toolbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .log-toolbar button {
+        min-height: 28px;
+        padding: 4px 9px;
+        font-size: 11px;
+      }
+
+      .log-follow-state {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .log-follow-state.paused {
+        color: var(--warning);
+      }
+
+      .log {
+        white-space: pre-wrap;
+      }
+
+      .log-line {
+        display: block;
+        min-height: 19px;
+        border-left: 3px solid transparent;
+        padding: 1px 10px;
+      }
+
+      .log-line.log-error {
+        border-left-color: #ef4444;
+        background: rgba(127, 29, 29, 0.42);
+        color: #fecaca;
+      }
+
+      .log-line.log-success {
+        border-left-color: #22c55e;
+        background: rgba(20, 83, 45, 0.35);
+        color: #bbf7d0;
+      }
+
+      .log-line.log-warning {
+        border-left-color: #f59e0b;
+        background: rgba(120, 53, 15, 0.28);
+        color: #fde68a;
+      }
+
+      .log-line.log-timing {
+        border-left-color: #22d3ee;
+        color: #a5f3fc;
+      }
+
+      .log-line.log-poll {
+        border-left-color: #60a5fa;
+        color: #bfdbfe;
+      }
+
+      .log-line.log-task {
+        border-left-color: #c084fc;
+        color: #e9d5ff;
+      }
+
+      .log-line.log-meta {
+        color: #94a3b8;
+      }
+
+      .history-table {
+        min-width: 900px;
+      }
+
+      .history-table th:nth-child(1) {
+        width: 145px;
+      }
+
+      .history-table th:nth-child(2) {
+        width: 34%;
+      }
+
+      .history-table th:nth-child(3) {
+        width: 76px;
+      }
+
+      .history-table th:nth-child(4) {
+        width: 28%;
+      }
+
+      .history-table th:nth-child(5) {
+        width: 190px;
+      }
+
       .review-body {
         padding: 0;
       }
@@ -905,7 +1049,7 @@
 
               <div class="toggle-list">
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
-                <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" /></label>
+                <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
                 <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
                 <label class="switch"><span>Keep running in background</span><input id="allowBackgroundRun" type="checkbox" checked /></label>
               </div>
@@ -1062,11 +1206,51 @@
 
           <section class="panel log-panel">
             <div class="panel-header">
-              <h2 class="panel-title">Debug log</h2>
+              <div class="log-tabs" role="tablist" aria-label="Monitor diagnostics">
+                <button class="active" type="button" role="tab" aria-selected="true" aria-controls="debugLogPane" data-log-tab="debug">Debug log</button>
+                <button type="button" role="tab" aria-selected="false" aria-controls="taskHistoryPane" data-log-tab="history">Task history <span class="log-tab-count" id="historyTabCount">0</span></button>
+              </div>
               <span class="small" id="logMeta">-</span>
             </div>
-            <div class="log-body">
-              <pre class="log" id="log">Loading...</pre>
+            <div class="log-pane" id="debugLogPane" role="tabpanel">
+              <div class="log-toolbar">
+                <span class="log-follow-state" id="logFollowState">Following live output</span>
+                <button id="jumpLogBottom" type="button" disabled>Jump to latest</button>
+              </div>
+              <div class="log-body">
+                <div class="log" id="log" role="log" aria-live="off"><span class="log-line log-meta">Loading...</span></div>
+              </div>
+            </div>
+            <div class="log-pane" id="taskHistoryPane" role="tabpanel" hidden>
+              <div class="log-toolbar">
+                <span class="log-follow-state" id="taskHistoryMeta">Stored in this browser</span>
+                <div class="log-toolbar-actions">
+                  <label class="small" for="taskHistoryFilter">Show</label>
+                  <select id="taskHistoryFilter">
+                    <option value="all">All tasks</option>
+                    <option value="skipped">Skipped</option>
+                    <option value="claim_failed">Claim failed</option>
+                    <option value="claimed">Claimed</option>
+                    <option value="eligible">Eligible / seen</option>
+                  </select>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="candidate-table history-table">
+                  <thead>
+                    <tr>
+                      <th>Recorded</th>
+                      <th>Task</th>
+                      <th>Tags</th>
+                      <th>Batch</th>
+                      <th>Outcome</th>
+                    </tr>
+                  </thead>
+                  <tbody id="taskHistoryBody">
+                    <tr class="empty-row"><td colspan="5">No task history yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         </main>
@@ -1108,6 +1292,14 @@
       let claimAlertSoundTimer = null;
       let claimAlertSoundTaskId = "";
       let mutedClaimAlertTaskId = "";
+      let logAutoFollow = true;
+      let renderingDebugLog = false;
+      let lastRenderedLogText = "";
+      let unseenLogLines = 0;
+      let activeDiagnosticTab = "debug";
+      const TASK_HISTORY_STORAGE_KEY = "feather.taskHistory.v1";
+      const TASK_HISTORY_LIMIT = 500;
+      let taskHistory = loadTaskHistory();
 
       const $ = (id) => document.getElementById(id);
 
@@ -1576,6 +1768,342 @@
         return (text || "No log yet.").replace(/\u0007/g, "");
       }
 
+      function debugLogLineClass(line) {
+        if (/^(ERROR|Traceback)|\b(POLL_TIMEOUT|POLL_CONNECTION_ERROR|BATCH_REFRESH_FAILED|RATE_LIMIT|CLAIM_FAILED|NOT_FOUND|blocked_in_progress)\b/i.test(line)) {
+          return "log-error";
+        }
+        if (/^(CLAIM\s+status=.*success=true|CLAIM_SUCCEEDED_STOPPING)\b/i.test(line)) {
+          return "log-success";
+        }
+        if (/^(STOPPING|STOPPED|SLEEP)|\bwarning\b/i.test(line)) {
+          return "log-warning";
+        }
+        if (/^(LOW_LATENCY|CLAIM_TIMING)|\b(cycle_ms|dispatch_ms|result_ms)=/i.test(line)) {
+          return "log-timing";
+        }
+        if (/^\[\d\d:\d\d:\d\d\]\s+tasks=/.test(line)) {
+          return "log-poll";
+        }
+        if (/^(TASK_TAGS|FOUND|BATCH\s|BATCH_REF)/.test(line)) {
+          return "log-task";
+        }
+        if (/^(BACKGROUND_RUN|batch_filter|tag_count_range|SAVED)/.test(line)) {
+          return "log-meta";
+        }
+        return "";
+      }
+
+      function logIsNearBottom(element) {
+        return element.scrollHeight - element.scrollTop - element.clientHeight <= 28;
+      }
+
+      function captureDebugLogAnchor(element) {
+        for (const child of element.children) {
+          if (child.offsetTop + child.offsetHeight >= element.scrollTop) {
+            return { text: child.textContent, offset: child.offsetTop - element.scrollTop };
+          }
+        }
+        return null;
+      }
+
+      function restoreDebugLogAnchor(element, anchor, previousTop) {
+        if (anchor) {
+          const match = Array.from(element.children).find((child) => child.textContent === anchor.text);
+          if (match) {
+            element.scrollTop = Math.max(0, match.offsetTop - anchor.offset);
+            return;
+          }
+        }
+        element.scrollTop = previousTop;
+      }
+
+      function countNewLogLines(previousText, nextText) {
+        if (!previousText) return 0;
+        const previousLines = previousText.split(/\r?\n/);
+        const nextLines = nextText.split(/\r?\n/);
+        const previousLast = previousLines[previousLines.length - 1];
+        for (let index = nextLines.length - 1; index >= 0; index -= 1) {
+          if (nextLines[index] === previousLast) return Math.max(0, nextLines.length - index - 1);
+        }
+        return nextText === previousText ? 0 : 1;
+      }
+
+      function updateLogFollowState() {
+        const state = $("logFollowState");
+        const jump = $("jumpLogBottom");
+        if (logAutoFollow) {
+          state.textContent = "Following live output";
+          state.classList.remove("paused");
+          jump.disabled = true;
+        } else {
+          state.textContent = unseenLogLines > 0
+            ? `History view paused · ${unseenLogLines} new line${unseenLogLines === 1 ? "" : "s"}`
+            : "History view paused";
+          state.classList.add("paused");
+          jump.disabled = false;
+        }
+      }
+
+      function renderDebugLog(text) {
+        const cleaned = cleanLog(text);
+        if (cleaned === lastRenderedLogText) return;
+        const element = $("log");
+        const shouldFollow = !lastRenderedLogText || logAutoFollow || logIsNearBottom(element);
+        const previousTop = element.scrollTop;
+        const anchor = shouldFollow ? null : captureDebugLogAnchor(element);
+        if (!shouldFollow) unseenLogLines += countNewLogLines(lastRenderedLogText, cleaned);
+
+        const fragment = document.createDocumentFragment();
+        cleaned.split(/\r?\n/).forEach((line) => {
+          const row = document.createElement("span");
+          const lineClass = debugLogLineClass(line);
+          row.className = `log-line${lineClass ? ` ${lineClass}` : ""}`;
+          row.textContent = line || " ";
+          fragment.appendChild(row);
+        });
+
+        renderingDebugLog = true;
+        element.replaceChildren(fragment);
+        lastRenderedLogText = cleaned;
+        if (shouldFollow) {
+          logAutoFollow = true;
+          unseenLogLines = 0;
+          element.scrollTop = element.scrollHeight;
+        } else {
+          restoreDebugLogAnchor(element, anchor, previousTop);
+        }
+        updateLogFollowState();
+        requestAnimationFrame(() => { renderingDebugLog = false; });
+      }
+
+      function loadTaskHistory() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(TASK_HISTORY_STORAGE_KEY) || "[]");
+          return Array.isArray(parsed) ? parsed.slice(0, TASK_HISTORY_LIMIT) : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function saveTaskHistory() {
+        try {
+          localStorage.setItem(TASK_HISTORY_STORAGE_KEY, JSON.stringify(taskHistory.slice(0, TASK_HISTORY_LIMIT)));
+        } catch {
+          // History remains available for this page if browser storage is unavailable.
+        }
+      }
+
+      function taskHistoryPriority(outcome) {
+        return { skipped: 1, eligible: 2, claim_failed: 3, claimed: 4 }[outcome] || 0;
+      }
+
+      function taskHistoryDecision(task, status) {
+        const regex = String(status.batch_regex || "").trim();
+        if (regex && task.batch && task.batch !== "-") {
+          try {
+            if (!new RegExp(regex, "i").test(task.batch)) {
+              return { outcome: "skipped", reason: `Batch did not match /${regex}/i` };
+            }
+          } catch {
+            // The server validates the expression; keep history usable if the browser parser differs.
+          }
+        }
+        const filter = tagFilter(status);
+        if (task.tagCount == null) return { outcome: "skipped", reason: "Tag count unknown" };
+        if (filter.min != null && task.tagCount < filter.min) {
+          return { outcome: "skipped", reason: `${task.tagCount} tags < minimum ${filter.min}` };
+        }
+        if (filter.max != null && task.tagCount > filter.max) {
+          return { outcome: "skipped", reason: `${task.tagCount} tags > maximum ${filter.max}` };
+        }
+        return { outcome: "eligible", reason: "Matched active filters" };
+      }
+
+      function upsertTaskHistory(incoming) {
+        if (!incoming?.id) return false;
+        const index = taskHistory.findIndex((item) => item.id === incoming.id);
+        const now = new Date().toISOString();
+        if (index < 0) {
+          taskHistory.unshift({
+            id: incoming.id,
+            title: incoming.title || "(title unavailable)",
+            batch: incoming.batch || "-",
+            tagCount: incoming.tagCount ?? null,
+            outcome: incoming.outcome || "eligible",
+            reason: incoming.reason || "Seen by monitor",
+            recordedAt: now,
+            updatedAt: now,
+          });
+          taskHistory = taskHistory.slice(0, TASK_HISTORY_LIMIT);
+          return true;
+        }
+
+        const existing = taskHistory[index];
+        const next = { ...existing };
+        let changed = false;
+        for (const field of ["title", "batch", "tagCount"]) {
+          const value = incoming[field];
+          if ((next[field] == null || next[field] === "" || next[field] === "-" || next[field] === "(title unavailable)") && value != null && value !== "") {
+            next[field] = value;
+            changed = true;
+          }
+        }
+        if (taskHistoryPriority(incoming.outcome) > taskHistoryPriority(next.outcome)) {
+          next.outcome = incoming.outcome;
+          next.reason = incoming.reason || next.reason;
+          changed = true;
+        } else if (incoming.outcome === next.outcome && incoming.reason && incoming.reason !== next.reason && next.reason === "Seen by monitor") {
+          next.reason = incoming.reason;
+          changed = true;
+        }
+        if (!changed) return false;
+        next.updatedAt = now;
+        taskHistory.splice(index, 1);
+        taskHistory.unshift(next);
+        return true;
+      }
+
+      function updateTaskHistoryFromLog(logText, status) {
+        const lines = cleanLog(logText).split(/\r?\n/);
+        const historyStatus = {
+          ...status,
+          tag_count_filter: { ...(status.tag_count_filter || {}) },
+        };
+        let changed = false;
+        for (const line of lines) {
+          const batchFilter = line.match(/^batch_filter\s+.*?regex=(.*?)\s+active_matches=/);
+          if (batchFilter && !historyStatus.batch_regex) historyStatus.batch_regex = batchFilter[1];
+          const tagRange = line.match(/^tag_count_range=(\*|\d+)\.\.(\*|\d+)/);
+          if (tagRange) {
+            if (historyStatus.tag_count_filter.min == null && tagRange[1] !== "*") historyStatus.tag_count_filter.min = Number(tagRange[1]);
+            if (historyStatus.tag_count_filter.max == null && tagRange[2] !== "*") historyStatus.tag_count_filter.max = Number(tagRange[2]);
+          }
+
+          const task = parseTaskTagsLine(line);
+          if (task) {
+            const decision = taskHistoryDecision(task, historyStatus);
+            changed = upsertTaskHistory({ ...task, outcome: decision.outcome, reason: decision.reason }) || changed;
+            continue;
+          }
+
+          const found = line.match(/^FOUND\s+(\S+):\s+(.*)$/);
+          if (found) {
+            const tagMatch = line.match(/\stag_count=(\S+)/);
+            const batchMatch = line.match(/\sbatch_name=(.*)$/);
+            const title = found[2].replace(/\s+regex=.*$/, "");
+            changed = upsertTaskHistory({
+              id: found[1],
+              title,
+              batch: batchMatch ? batchMatch[1] : "-",
+              tagCount: tagMatch ? parseOptionalNumber(tagMatch[1]) : null,
+              outcome: "eligible",
+              reason: "Detected as eligible",
+            }) || changed;
+            continue;
+          }
+
+          const failed = line.match(/^CLAIM_FAILED_CONTINUING\s+(\S+)/);
+          if (failed) {
+            changed = upsertTaskHistory({ id: failed[1], outcome: "claim_failed", reason: "Claim attempt did not win the task" }) || changed;
+            continue;
+          }
+          const claimed = line.match(/^CLAIM_SUCCEEDED_STOPPING\s+(\S+)/);
+          if (claimed) {
+            changed = upsertTaskHistory({ id: claimed[1], outcome: "claimed", reason: "Claim succeeded" }) || changed;
+          }
+        }
+
+        const stateOutcome = {
+          claimed: "claimed",
+          claim_failed_continuing: "claim_failed",
+          found: "eligible",
+        }[status.state];
+        if (stateOutcome && status.task_id) {
+          changed = upsertTaskHistory({
+            id: status.task_id,
+            title: status.title,
+            batch: batchText(status.batch),
+            tagCount: status.tag_count,
+            outcome: stateOutcome,
+            reason: stateOutcome === "claimed" ? "Claim succeeded" : stateOutcome === "claim_failed" ? "Claim attempt did not win the task" : "Detected as eligible",
+          }) || changed;
+        }
+
+        if (changed) saveTaskHistory();
+        renderTaskHistory();
+      }
+
+      function taskHistoryOutcome(record) {
+        if (record.outcome === "claimed") return { label: "Claimed", className: "claimed" };
+        if (record.outcome === "claim_failed") return { label: "Claim failed / lost", className: "failed" };
+        if (record.outcome === "skipped") return { label: "Skipped", className: "skipped" };
+        return { label: "Eligible / seen", className: "eligible" };
+      }
+
+      function renderTaskHistory() {
+        const filter = $("taskHistoryFilter")?.value || "all";
+        const rows = taskHistory.filter((record) => filter === "all" || record.outcome === filter);
+        $("historyTabCount").textContent = String(taskHistory.length);
+        $("taskHistoryMeta").textContent = `${rows.length} shown · ${taskHistory.length} stored in this browser`;
+        const body = $("taskHistoryBody");
+        body.innerHTML = "";
+        if (!rows.length) {
+          const row = document.createElement("tr");
+          row.className = "empty-row";
+          const cell = document.createElement("td");
+          cell.colSpan = 5;
+          cell.textContent = taskHistory.length ? "No tasks match this filter." : "No task history yet.";
+          row.appendChild(cell);
+          body.appendChild(row);
+          return;
+        }
+
+        rows.forEach((record) => {
+          const row = document.createElement("tr");
+          const timeCell = document.createElement("td");
+          const parsedTime = new Date(record.updatedAt || record.recordedAt);
+          timeCell.textContent = Number.isNaN(parsedTime.getTime()) ? "-" : parsedTime.toLocaleString();
+
+          const taskCell = document.createElement("td");
+          const title = document.createElement("div");
+          title.className = "candidate-title";
+          title.textContent = record.title || "(title unavailable)";
+          const id = document.createElement("div");
+          id.className = "candidate-id";
+          id.textContent = record.id;
+          taskCell.append(title, id);
+
+          const tagCell = document.createElement("td");
+          tagCell.textContent = record.tagCount == null ? "unknown" : String(record.tagCount);
+          const batchCell = document.createElement("td");
+          batchCell.textContent = record.batch || "-";
+
+          const outcomeCell = document.createElement("td");
+          const outcome = taskHistoryOutcome(record);
+          const badge = document.createElement("span");
+          badge.className = `decision-badge ${outcome.className}`;
+          badge.textContent = outcome.label;
+          const reason = document.createElement("div");
+          reason.className = "candidate-id";
+          reason.textContent = record.reason || "";
+          outcomeCell.append(badge, reason);
+          row.append(timeCell, taskCell, tagCell, batchCell, outcomeCell);
+          body.appendChild(row);
+        });
+      }
+
+      function setDiagnosticTab(tab) {
+        activeDiagnosticTab = tab === "history" ? "history" : "debug";
+        document.querySelectorAll("[data-log-tab]").forEach((button) => {
+          const active = button.dataset.logTab === activeDiagnosticTab;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-selected", String(active));
+        });
+        $("debugLogPane").hidden = activeDiagnosticTab !== "debug";
+        $("taskHistoryPane").hidden = activeDiagnosticTab !== "history";
+        if (activeDiagnosticTab === "history") renderTaskHistory();
+      }
+
       function claimAlertKey(taskId) {
         return `feather.timerAlertAck.${taskId || "unknown"}`;
       }
@@ -1938,6 +2466,7 @@
         setText("reviewState", reviewText(status));
         renderSeenTasks(pollSnapshot, status);
         renderClaimResult(status, pollSnapshot);
+        updateTaskHistoryFromLog(latest.log_tail, status);
         await refreshReviewOutput(status);
 
         $("dot").className = `dot ${state}`;
@@ -1945,8 +2474,7 @@
         $("paths").textContent = pathSummary.text;
         $("paths").title = pathSummary.title;
         $("logMeta").textContent = latest.paths?.log || "-";
-        $("log").textContent = cleanLog(latest.log_tail);
-        $("log").scrollTop = $("log").scrollHeight;
+        renderDebugLog(latest.log_tail);
         $("stop").disabled = !running;
         $("stop2").disabled = !running;
         if (!$("curlText").value.trim()) currentCurlValidation();
@@ -2036,6 +2564,23 @@
         setMessage("GraphQL templates saved.");
         await refresh();
       }
+
+      document.querySelectorAll("[data-log-tab]").forEach((button) => {
+        button.addEventListener("click", () => setDiagnosticTab(button.dataset.logTab));
+      });
+      $("taskHistoryFilter").addEventListener("change", renderTaskHistory);
+      $("jumpLogBottom").addEventListener("click", () => {
+        logAutoFollow = true;
+        unseenLogLines = 0;
+        $("log").scrollTop = $("log").scrollHeight;
+        updateLogFollowState();
+      });
+      $("log").addEventListener("scroll", () => {
+        if (renderingDebugLog) return;
+        logAutoFollow = logIsNearBottom($("log"));
+        if (logAutoFollow) unseenLogLines = 0;
+        updateLogFollowState();
+      });
 
       $("refresh").addEventListener("click", () => refresh().catch((error) => setMessage(error.message)));
       $("start").addEventListener("click", () => {
