@@ -14,6 +14,8 @@ venv/
 last_found*.json
 last_claimed*.json
 
-# Codex scratch/output folders from the original investigation
+# Local agent/tool state and scratch output
+.agents/
+.codex/
 outputs/
 work/
