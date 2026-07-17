@@ -983,6 +983,7 @@
         <div class="top-actions">
           <button id="refresh">Refresh</button>
           <button id="stop" class="danger">Stop</button>
+          <button id="shutdownBackend" class="danger">Close backend</button>
         </div>
       </header>
 
@@ -1052,7 +1053,9 @@
                 <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
                 <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
                 <label class="switch"><span>Keep running in background</span><input id="allowBackgroundRun" type="checkbox" checked /></label>
+                <label class="switch"><span>Close backend when dashboard closes</span><input id="shutdownBackendOnClose" type="checkbox" checked /></label>
               </div>
+              <div class="small" id="dashboardLifetimeHint">The backend closes after the last Dashboard page is closed.</div>
 
               <div class="action-grid">
                 <button id="start" class="primary wide">Start / Restart</button>
@@ -1288,6 +1291,7 @@
       let titleFlashTimer = null;
       let originalTitle = document.title;
       let activeSessionId = null;
+      let backendClosing = false;
       let alertAudioContext = null;
       let claimAlertSoundTimer = null;
       let claimAlertSoundTaskId = "";
@@ -1299,9 +1303,15 @@
       let activeDiagnosticTab = "debug";
       const TASK_HISTORY_STORAGE_KEY = "feather.taskHistory.v1";
       const TASK_HISTORY_LIMIT = 500;
+      const DASHBOARD_SHUTDOWN_STORAGE_KEY = "feather.shutdownBackendOnClose.v1";
+      const dashboardClientId = window.crypto?.randomUUID
+        ? window.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       let taskHistory = loadTaskHistory();
 
       const $ = (id) => document.getElementById(id);
+      const savedShutdownPreference = localStorage.getItem(DASHBOARD_SHUTDOWN_STORAGE_KEY);
+      $("shutdownBackendOnClose").checked = savedShutdownPreference !== "0";
 
       function setMessage(text) {
         $("message").textContent = text || "";
@@ -1341,6 +1351,39 @@
         } catch {
           // The server-side lease will stop the worker if the dashboard cannot be reached.
         }
+      }
+
+      function dashboardHeartbeatPayload() {
+        return {
+          clientId: dashboardClientId,
+          shutdownOnDisconnect: $("shutdownBackendOnClose").checked,
+        };
+      }
+
+      async function sendDashboardHeartbeat() {
+        if (backendClosing) return;
+        try {
+          await api("/api/dashboard-heartbeat", {
+            method: "POST",
+            body: JSON.stringify(dashboardHeartbeatPayload()),
+          });
+        } catch {
+          // The manual refresh and state loop surface server connection problems.
+        }
+      }
+
+      function notifyDashboardDisconnect() {
+        const body = JSON.stringify(dashboardHeartbeatPayload());
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon("/api/dashboard-disconnect", new Blob([body], { type: "application/json" }));
+          return;
+        }
+        fetch("/api/dashboard-disconnect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        }).catch(() => {});
       }
 
       function unixTimeText(value) {
@@ -2456,6 +2499,10 @@
         setText("mode", `${modeText(status)} / ${status.review_mode_name || currentModeConfig()?.name || $("reviewMode").value}`);
         setText("updated", ageText(status.updated_at));
         setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
+        const dashboardClients = latest.dashboard_clients || {};
+        $("dashboardLifetimeHint").textContent = $("shutdownBackendOnClose").checked
+          ? `Auto-close enabled · ${dashboardClients.connected_clients ?? 1} Dashboard page(s) connected · 5s refresh grace`
+          : "Auto-close disabled · use Close backend to exit the service";
         setText("curlSaved", latest.curl_saved ? "saved" : "empty");
         setText("campaignView", status.campaign_name || status.campaign_id || $("campaignId").selectedOptions[0]?.textContent);
         setText("taskId", status.task_id);
@@ -2530,6 +2577,29 @@
         await refresh();
       }
 
+      async function closeBackend() {
+        if (!window.confirm("Stop the monitor and close the Dashboard backend?")) return;
+        setMessage("Closing backend...");
+        try {
+          await api("/api/dashboard-heartbeat", {
+            method: "POST",
+            body: JSON.stringify(dashboardHeartbeatPayload()),
+          });
+          backendClosing = true;
+          await api("/api/shutdown", {
+            method: "POST",
+            body: JSON.stringify({ clientId: dashboardClientId }),
+          });
+          activeSessionId = null;
+          $("shutdownBackend").disabled = true;
+          $("start").disabled = true;
+          setMessage("Backend shutdown requested. You can close this page.");
+        } catch (error) {
+          backendClosing = false;
+          throw error;
+        }
+      }
+
       async function saveCurl() {
         const validation = currentCurlValidation();
         if (!validation.ok) {
@@ -2589,6 +2659,7 @@
       });
       $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
+      $("shutdownBackend").addEventListener("click", () => closeBackend().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
       $("testBatchRegex").addEventListener("click", () => testBatchRegex().catch((error) => renderBatchRegexTest(null, error.message)));
@@ -2597,9 +2668,25 @@
       $("campaignId").addEventListener("change", currentCurlValidation);
       $("customCampaignId").addEventListener("input", currentCurlValidation);
       $("reviewMode").addEventListener("change", applyReviewModeDefaults);
+      $("shutdownBackendOnClose").addEventListener("change", () => {
+        localStorage.setItem(
+          DASHBOARD_SHUTDOWN_STORAGE_KEY,
+          $("shutdownBackendOnClose").checked ? "1" : "0",
+        );
+        sendDashboardHeartbeat();
+      });
+      window.addEventListener("storage", (event) => {
+        if (event.key !== DASHBOARD_SHUTDOWN_STORAGE_KEY) return;
+        $("shutdownBackendOnClose").checked = event.newValue !== "0";
+        sendDashboardHeartbeat();
+      });
+      window.addEventListener("pagehide", (event) => {
+        if (!event.persisted) notifyDashboardDisconnect();
+      });
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {
           sendHeartbeat();
+          sendDashboardHeartbeat();
           refresh().catch((error) => setMessage(error.message));
         }
       });
@@ -2627,9 +2714,13 @@
         stopTitleFlash();
       });
 
+      sendDashboardHeartbeat();
       refresh().catch((error) => setMessage(error.message));
       setInterval(() => sendHeartbeat(), 2000);
-      setInterval(() => refresh().catch(() => {}), 1000);
+      setInterval(() => sendDashboardHeartbeat(), 5000);
+      setInterval(() => {
+        if (!backendClosing) refresh().catch(() => {});
+      }, 1000);
     </script>
   </body>
 </html>

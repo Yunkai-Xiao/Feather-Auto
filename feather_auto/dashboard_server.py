@@ -29,6 +29,7 @@ from .cli import (
     run_monitor,
     tag_count_filter_payload,
 )
+from .dashboard_lifetime import DashboardLeaseRegistry
 from .review_task_slides import run_review_pipeline
 
 
@@ -80,6 +81,9 @@ REVIEW_MODES = [
 ]
 ACTIVE_SESSION_TTL_SECONDS = 20.0
 ACTIVE_SESSION_CHECK_SECONDS = 1.0
+DASHBOARD_CLIENT_TTL_SECONDS = 90.0
+DASHBOARD_CLOSE_GRACE_SECONDS = 5.0
+DASHBOARD_CLIENT_CHECK_SECONDS = 0.5
 INACTIVE_SESSION_REASON = (
     "Dashboard heartbeat stopped. Search and claim were stopped to prevent background claims."
 )
@@ -658,6 +662,13 @@ class MonitorController:
             self._status = {**self._status, "state": "stopping"}
             return True
 
+    def wait_for_stop(self, timeout: float) -> bool:
+        with self._lock:
+            thread = self._thread if self._running_unlocked() else None
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+        return not bool(thread and thread.is_alive())
+
     def state(self) -> dict[str, Any]:
         with self._lock:
             self._stop_inactive_session_unlocked()
@@ -695,6 +706,12 @@ class MonitorController:
 
 
 MONITOR = MonitorController()
+DASHBOARD_CLIENTS = DashboardLeaseRegistry(
+    ttl_seconds=DASHBOARD_CLIENT_TTL_SECONDS,
+    close_grace_seconds=DASHBOARD_CLOSE_GRACE_SECONDS,
+)
+_DASHBOARD_SHUTDOWN_LOCK = threading.Lock()
+_dashboard_shutdown_requested = False
 
 
 def start_monitor(config: dict[str, Any]) -> dict[str, Any]:
@@ -707,6 +724,36 @@ def stop_monitor() -> bool:
 
 def heartbeat_monitor(session_id: str) -> dict[str, Any]:
     return MONITOR.heartbeat(session_id)
+
+
+def request_dashboard_shutdown(server: ThreadingHTTPServer, reason: str) -> tuple[bool, bool]:
+    global _dashboard_shutdown_requested
+    with _DASHBOARD_SHUTDOWN_LOCK:
+        if _dashboard_shutdown_requested:
+            return False, False
+        _dashboard_shutdown_requested = True
+
+    stopped = stop_monitor()
+    print(f"Dashboard shutdown requested: {reason}", flush=True)
+
+    def finish_shutdown() -> None:
+        MONITOR.wait_for_stop(timeout=3.0)
+        time.sleep(0.1)
+        server.shutdown()
+
+    threading.Thread(
+        target=finish_shutdown,
+        name="FeatherDashboardShutdown",
+        daemon=True,
+    ).start()
+    return stopped, True
+
+
+def watch_dashboard_clients(server: ThreadingHTTPServer, stop_event: threading.Event) -> None:
+    while not stop_event.wait(DASHBOARD_CLIENT_CHECK_SECONDS):
+        if DASHBOARD_CLIENTS.poll():
+            request_dashboard_shutdown(server, "last dashboard page closed")
+            return
 
 
 def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
@@ -737,7 +784,7 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def dashboard_state() -> dict[str, Any]:
-    return MONITOR.state()
+    return {**MONITOR.state(), "dashboard_clients": DASHBOARD_CLIENTS.snapshot()}
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -775,6 +822,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = read_json_body(self)
                 session_id = str(payload.get("sessionId") or "").strip()
                 write_json(self, 200, {"ok": True, **heartbeat_monitor(session_id)})
+                return
+            if self.path == "/api/dashboard-heartbeat":
+                payload = read_json_body(self)
+                client_id = str(payload.get("clientId") or "").strip()
+                lease = DASHBOARD_CLIENTS.heartbeat(
+                    client_id,
+                    payload.get("shutdownOnDisconnect") is not False,
+                )
+                write_json(self, 200, {"ok": True, **lease})
+                return
+            if self.path == "/api/dashboard-disconnect":
+                payload = read_json_body(self)
+                client_id = str(payload.get("clientId") or "").strip()
+                shutdown_on_disconnect = payload.get("shutdownOnDisconnect")
+                lease = DASHBOARD_CLIENTS.disconnect(
+                    client_id,
+                    shutdown_on_disconnect if isinstance(shutdown_on_disconnect, bool) else None,
+                )
+                write_json(self, 200, {"ok": True, **lease})
+                return
+            if self.path == "/api/shutdown":
+                payload = read_json_body(self)
+                client_id = str(payload.get("clientId") or "").strip()
+                if not DASHBOARD_CLIENTS.has_client(client_id):
+                    write_json(self, 403, {"ok": False, "error": "Unknown dashboard client."})
+                    return
+                stopped, accepted = request_dashboard_shutdown(self.server, "manual dashboard action")
+                write_json(
+                    self,
+                    200,
+                    {"ok": True, "accepted": accepted, "monitor_stop_requested": stopped},
+                )
                 return
             if self.path == "/api/test-batch-regex":
                 payload = read_json_body(self)
@@ -817,11 +896,21 @@ def main(argv: list[str] | None = None) -> int:
 
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    lifetime_stop_event = threading.Event()
+    lifetime_watchdog = threading.Thread(
+        target=watch_dashboard_clients,
+        args=(server, lifetime_stop_event),
+        name="FeatherDashboardLifetimeWatchdog",
+        daemon=True,
+    )
     DASHBOARD_PID_FILE.write_text(str(os.getpid()), encoding="ascii")
     print(f"Dashboard: http://{args.host}:{args.port}/dashboard.html", flush=True)
+    lifetime_watchdog.start()
     try:
         server.serve_forever()
     finally:
+        lifetime_stop_event.set()
+        server.server_close()
         try:
             if DASHBOARD_PID_FILE.read_text(encoding="ascii").strip() == str(os.getpid()):
                 DASHBOARD_PID_FILE.unlink()

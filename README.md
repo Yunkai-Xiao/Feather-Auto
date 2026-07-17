@@ -269,10 +269,17 @@ Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
 campaign. If one exists, it stops without claiming and shows a blocking alert.
 
-When started from the dashboard, the worker also requires a live dashboard
-session heartbeat. If the dashboard page is closed or disconnected for about
-20 seconds, the server stops the worker so search and claim cannot continue in
-the background.
+When `Keep running in background` is off, the worker requires a live monitor
+session heartbeat. If that heartbeat is lost for about 20 seconds, the server
+stops search and claim activity.
+
+`Close backend when dashboard closes` is enabled by default. The last open
+Dashboard page starts a five-second shutdown grace period, which allows an
+ordinary refresh to reconnect without stopping the service. Multiple Dashboard
+tabs are tracked independently. If the browser cannot send its close notice, a
+90-second page-lease timeout provides a fallback. Turn the switch off to keep
+the service on port 8001 after closing the page, or use `Close backend` in the
+top bar to stop the worker and server immediately.
 
 ## Dashboard State Model
 
