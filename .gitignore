@@ -17,3 +17,4 @@ last_claimed*.json
 # Codex scratch/output folders from the original investigation
 outputs/
 work/
+data/

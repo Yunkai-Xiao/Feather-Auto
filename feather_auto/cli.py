@@ -9,11 +9,20 @@ import subprocess
 import sys
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 import requests
+
+from .coordination import (
+    CoordinationConfig,
+    CoordinationError,
+    CoordinationLease,
+    LeaseUnavailable,
+    account_key_for_user,
+    default_owner_label,
+)
 
 
 BASE_URL = "https://feather.openai.com"
@@ -73,6 +82,13 @@ class MonitorConfig:
     task_kind: str | None = None
     tag_count_min: int | None = None
     tag_count_max: int | None = None
+    coordination_url: str | None = None
+    coordination_token: str | None = None
+    coordination_owner: str | None = None
+    coordination_state_file: str | None = None
+    coordination_search_ttl: int = 120
+    coordination_working_ttl: int = 12 * 60 * 60
+    _coordination_lease: CoordinationLease | None = field(default=None, init=False, repr=False)
 
 
 class Tee:
@@ -143,6 +159,10 @@ def write_status(path: str | None, **status: Any) -> None:
     write_status_payload(path, status_payload(**status))
 
 
+def create_http_session() -> requests.Session:
+    return requests.Session()
+
+
 def request_with_retries(
     method: str,
     url: str,
@@ -150,12 +170,14 @@ def request_with_retries(
     timeout: int = REQUEST_TIMEOUT_SECONDS,
     retries: int = SAFE_REQUEST_RETRIES,
     retry_delay: float = SAFE_REQUEST_RETRY_DELAY_SECONDS,
+    session: requests.Session | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     last_error: requests.exceptions.RequestException | None = None
+    request = session.request if session is not None else requests.request
     for attempt in range(retries + 1):
         try:
-            return requests.request(method, url, timeout=timeout, **kwargs)
+            return request(method, url, timeout=timeout, **kwargs)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             last_error = exc
             if attempt >= retries:
@@ -287,8 +309,17 @@ def nested_values(value: Any):
         yield str(value)
 
 
-def fetch_batch_refs(headers: dict[str, str], campaign_id: str) -> list[dict[str, Any]]:
-    response = request_with_retries("GET", task_batch_refs_url(campaign_id), headers=headers)
+def fetch_batch_refs(
+    headers: dict[str, str],
+    campaign_id: str,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    response = request_with_retries(
+        "GET",
+        task_batch_refs_url(campaign_id),
+        headers=headers,
+        session=session,
+    )
     response.raise_for_status()
     data = response.json()
     return data.get("task_batch_refs", []) if isinstance(data, dict) else []
@@ -322,23 +353,46 @@ def compile_batch_regex(batch_regex: str | None) -> re.Pattern[str] | None:
         raise ValueError(f"Invalid batch regex: {exc}") from exc
 
 
-def active_batch_refs(headers: dict[str, str], campaign_id: str) -> list[dict[str, Any]]:
-    return [ref for ref in fetch_batch_refs(headers, campaign_id) if active_batch_ref(ref)]
+def active_batch_refs(
+    headers: dict[str, str],
+    campaign_id: str,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    return [ref for ref in fetch_batch_refs(headers, campaign_id, session=session) if active_batch_ref(ref)]
 
 
 def batch_ref_name(ref: dict[str, Any]) -> str:
     return str(ref.get("name") or "")
 
 
-def batch_refs_for_regex(headers: dict[str, str], campaign_id: str, batch_regex: str | None) -> list[dict[str, Any]]:
+def batch_refs_for_regex(
+    headers: dict[str, str],
+    campaign_id: str,
+    batch_regex: str | None,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
     pattern = compile_batch_regex(batch_regex)
     if not pattern:
         return []
-    return [ref for ref in active_batch_refs(headers, campaign_id) if pattern.search(batch_ref_name(ref))]
+    return [
+        ref
+        for ref in active_batch_refs(headers, campaign_id, session=session)
+        if pattern.search(batch_ref_name(ref))
+    ]
 
 
-def batch_refs_for_suffix(headers: dict[str, str], campaign_id: str, suffix: str | None) -> list[dict[str, Any]]:
-    return batch_refs_for_regex(headers, campaign_id, suffix_to_batch_regex(suffix))
+def batch_refs_for_suffix(
+    headers: dict[str, str],
+    campaign_id: str,
+    suffix: str | None,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    return batch_refs_for_regex(
+        headers,
+        campaign_id,
+        suffix_to_batch_regex(suffix),
+        session=session,
+    )
 
 
 def batch_ref_summary(ref: dict[str, Any]) -> dict[str, Any]:
@@ -355,11 +409,12 @@ def batch_refs_for_filters(
     campaign_id: str,
     batch_name: str | None,
     batch_regex: str | None,
+    session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
     if not batch_name and not batch_regex:
         return []
 
-    refs = active_batch_refs(headers, campaign_id)
+    refs = active_batch_refs(headers, campaign_id, session=session)
     if batch_name:
         needle = batch_name.lower()
         refs = [ref for ref in refs if needle in batch_ref_name(ref).lower()]
@@ -424,8 +479,15 @@ def resolve_batch_searches(
     batch_id: str | None,
     batch_name: str | None,
     batch_regex: str | None,
+    session: requests.Session | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str | None, dict[str, Any]]]]:
-    allowed_batch_refs = batch_refs_for_filters(headers, campaign_id, batch_name, batch_regex)
+    allowed_batch_refs = batch_refs_for_filters(
+        headers,
+        campaign_id,
+        batch_name,
+        batch_regex,
+        session=session,
+    )
     batch_ids = search_batch_ids(payload, batch_id, batch_name, batch_regex, allowed_batch_refs)
     return allowed_batch_refs, batch_search_payloads(payload, batch_ids)
 
@@ -542,12 +604,17 @@ def task_url(task_id: str) -> str:
     return f"{BASE_URL}/tasks/{task_id}"
 
 
-def poll_once(headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+def poll_once(
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
     response = request_with_retries(
         "POST",
         SEARCH_URL,
         headers=headers,
         data=json.dumps(payload, separators=(",", ":")),
+        session=session,
     )
     if response.status_code in (401, 403):
         raise RuntimeError(f"auth failed: HTTP {response.status_code} {response.text[:160]}")
@@ -567,6 +634,8 @@ def poll_all_pages(
     payload: dict[str, Any],
     max_pages: int = MAX_SEARCH_PAGES,
     first_page: dict[str, Any] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+    session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch every task-search page, stopping safely on an empty or repeated page."""
     if max_pages < 1:
@@ -584,11 +653,15 @@ def poll_all_pages(
 
     pending_first_page = first_page
     for _ in range(max_pages):
+        if pages and stop_requested is not None and stop_requested():
+            break
         if pending_first_page is not None:
             data = pending_first_page
             pending_first_page = None
-        else:
+        elif session is None:
             data = poll_once(headers, page_payload)
+        else:
+            data = poll_once(headers, page_payload, session=session)
         raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
         tasks = raw_tasks if isinstance(raw_tasks, list) else []
         signature = task_page_signature(tasks)
@@ -668,8 +741,13 @@ def claim_payload(task_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def claim_task(headers: dict[str, str], task_id: str) -> requests.Response:
-    response = requests.post(
+def claim_task(
+    headers: dict[str, str],
+    task_id: str,
+    session: requests.Session | None = None,
+) -> requests.Response:
+    post = session.post if session is not None else requests.post
+    response = post(
         f"{BASE_URL}/api/graphql",
         headers=headers,
         data=json.dumps(claim_payload(task_id), separators=(",", ":")),
@@ -680,13 +758,41 @@ def claim_task(headers: dict[str, str], task_id: str) -> requests.Response:
     return response
 
 
-def current_user(headers: dict[str, str]) -> dict[str, Any]:
-    response = request_with_retries("GET", WHOAMI_URL, headers=headers)
+def current_user(
+    headers: dict[str, str],
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    response = request_with_retries("GET", WHOAMI_URL, headers=headers, session=session)
     response.raise_for_status()
     return response.json().get("user", {})
 
 
-def verify_task_assignment(headers: dict[str, str], campaign_id: str, page_size: int, task_id: str) -> dict[str, Any] | None:
+def credential_account_summary(user: dict[str, Any]) -> dict[str, str | None]:
+    user_id = str(user.get("id") or "").strip()
+    email = str(user.get("email") or "").strip()
+    display_name = str(
+        user.get("name")
+        or user.get("display_name")
+        or user.get("displayName")
+        or user.get("full_name")
+        or user.get("fullName")
+        or ""
+    ).strip()
+    return {
+        "label": email or display_name or user_id or "Unknown Feather account",
+        "email": email or None,
+        "display_name": display_name or None,
+        "user_id": user_id or None,
+    }
+
+
+def verify_task_assignment(
+    headers: dict[str, str],
+    campaign_id: str,
+    page_size: int,
+    task_id: str,
+    session: requests.Session | None = None,
+) -> dict[str, Any] | None:
     verify_payload = default_search_payload(campaign_id, page_size)
     verify_payload["workflow_statuses"] = [
         "unclaimed",
@@ -703,7 +809,7 @@ def verify_task_assignment(headers: dict[str, str], campaign_id: str, page_size:
     ]
     verify_payload["exclude_declined"] = False
     verify_payload["query"] = task_id
-    for data in poll_all_pages(headers, verify_payload):
+    for data in poll_all_pages(headers, verify_payload, session=session):
         for task in data.get("tasks", []):
             if task.get("id") == task_id:
                 return task
@@ -726,11 +832,12 @@ def find_current_in_progress_task(
     campaign_id: str,
     page_size: int,
     user: dict[str, Any],
+    session: requests.Session | None = None,
 ) -> dict[str, Any] | None:
     payload = default_search_payload(campaign_id, max(page_size, 50))
     payload["workflow_statuses"] = ["in_progress"]
     payload["exclude_declined"] = False
-    for data in poll_all_pages(headers, payload):
+    for data in poll_all_pages(headers, payload, session=session):
         for task in data.get("tasks", []):
             if is_current_user_task(task, user):
                 return task
@@ -804,35 +911,58 @@ def print_claim_result(
     page_size: int,
     task_id: str,
     emit: Emit = print,
+    session: requests.Session | None = None,
+    user: dict[str, Any] | None = None,
 ) -> bool:
-    response = claim_task(claim_headers, task_id)
-    emit(f"CLAIM status={response.status_code}", flush=True)
+    response = claim_task(claim_headers, task_id, session=session)
     claim_succeeded = False
+    definitive_result = False
+    response_preview = ""
     try:
         body = response.json()
-        emit(json.dumps(body, ensure_ascii=False, indent=2)[:2000], flush=True)
-        first = body[0] if isinstance(body, list) and body else {}
+        if isinstance(body, list):
+            first = body[0] if body else {}
+        else:
+            first = body if isinstance(body, dict) else {}
         data = first.get("data") if isinstance(first, dict) else None
         update = data.get("updateTaskStatus") if isinstance(data, dict) else None
+        definitive_result = bool(isinstance(first, dict) and (isinstance(update, dict) or first.get("errors")))
         claim_succeeded = (
             response.status_code == 200
             and isinstance(update, dict)
             and update.get("id") == task_id
-            and update.get("workflowStatus") == "IN_PROGRESS"
+            and str(update.get("workflowStatus") or "").upper() == "IN_PROGRESS"
             and not first.get("errors")
         )
+        if not claim_succeeded:
+            response_preview = json.dumps(body, ensure_ascii=False, separators=(",", ":"))[:1200]
     except ValueError:
-        emit(response.text[:2000], flush=True)
+        response_preview = response.text[:1200]
 
-    user = current_user(search_headers)
-    verified_task = verify_task_assignment(search_headers, campaign_id, page_size, task_id)
+    emit(
+        f"CLAIM status={response.status_code} success={'true' if claim_succeeded else 'false'}",
+        flush=True,
+    )
+    if response_preview:
+        emit(f"CLAIM_RESPONSE {response_preview}", flush=True)
+    if claim_succeeded or definitive_result:
+        return claim_succeeded
+
+    resolved_user = user if user is not None else current_user(search_headers, session=session)
+    verified_task = verify_task_assignment(
+        search_headers,
+        campaign_id,
+        page_size,
+        task_id,
+        session=session,
+    )
     if not verified_task:
         emit("VERIFY task_not_found_after_claim", flush=True)
         return claim_succeeded
 
     verification = {
-        "expected_user_id": user.get("id"),
-        "expected_email": user.get("email"),
+        "expected_user_id": resolved_user.get("id"),
+        "expected_email": resolved_user.get("email"),
         "claimed_by_user_id": verified_task.get("claimed_by_user_id"),
         "claimed_by_user_email": verified_task.get("claimed_by_user_email"),
         "active_user_id": verified_task.get("active_user_id"),
@@ -840,9 +970,9 @@ def print_claim_result(
         "workflow_status": verified_task.get("workflow_status"),
     }
     emit("VERIFY " + json.dumps(verification, ensure_ascii=False), flush=True)
-    if user.get("id") and (
-        verified_task.get("claimed_by_user_id") == user.get("id")
-        or verified_task.get("active_user_id") == user.get("id")
+    if resolved_user.get("id") and (
+        verified_task.get("claimed_by_user_id") == resolved_user.get("id")
+        or verified_task.get("active_user_id") == resolved_user.get("id")
     ):
         claim_succeeded = True
     return claim_succeeded
@@ -870,6 +1000,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--log-file", help="Append stdout/stderr to this file.")
     parser.add_argument("--status-file", help="Continuously write current monitor status as JSON.")
     parser.add_argument("--task-kind", help="Optional x-feather-client-task-kind header for claim.")
+    parser.add_argument("--coordination-url", default=os.environ.get("FEATHER_COORDINATION_URL"), help="Shared account coordination server URL.")
+    parser.add_argument("--coordination-token", default=os.environ.get("FEATHER_COORDINATION_TOKEN"), help="Coordination server bearer token.")
+    parser.add_argument("--coordination-owner", default=os.environ.get("FEATHER_COORDINATION_OWNER"), help="Human-readable operator name shown to other users.")
+    parser.add_argument("--coordination-state-file", default=os.environ.get("FEATHER_COORDINATION_STATE_FILE", "outputs/coordination_lease.json"), help="Local file used to release a claimed-task lease.")
+    parser.add_argument("--coordination-search-ttl", type=int, default=int(os.environ.get("FEATHER_COORDINATION_SEARCH_TTL", "120")))
+    parser.add_argument("--coordination-working-ttl", type=int, default=int(os.environ.get("FEATHER_COORDINATION_WORKING_TTL", str(12 * 60 * 60))))
     return parser.parse_args(argv)
 
 
@@ -896,11 +1032,12 @@ def next_sleep(min_interval: float, max_interval: float) -> float:
     return random.uniform(min_interval, max_interval)
 
 
-def run_monitor(
+def _run_monitor_impl(
     config: MonitorConfig,
     stop_event: Any | None = None,
     emit: Emit = print,
     status_callback: StatusCallback | None = None,
+    session: requests.Session | None = None,
 ) -> int:
     min_interval, max_interval = validate_interval_values(config.interval, config.interval_min, config.interval_max)
     if config.page_size < 1:
@@ -915,11 +1052,20 @@ def run_monitor(
     batch_regex = effective_batch_regex(config.batch_regex, config.batch_suffix)
     compile_batch_regex(batch_regex)
 
+    coordination_lease: CoordinationLease | None = None
+    credential_account: dict[str, str | None] | None = None
+
     def stop_requested() -> bool:
         return bool(stop_event is not None and stop_event.is_set())
 
     def update_status(**status: Any) -> None:
         status.setdefault("batch_regex", batch_regex)
+        status.setdefault("coordination_enabled", bool(config.coordination_url))
+        status.setdefault("credential_account", credential_account)
+        if coordination_lease is not None:
+            status.setdefault("coordination_account_key", coordination_lease.account_key)
+            status.setdefault("coordination_owner", coordination_lease.config.owner_label)
+            status.setdefault("coordination_phase", coordination_lease.phase)
         payload = status_payload(**status)
         write_status_payload(config.status_file, payload)
         if status_callback:
@@ -948,9 +1094,81 @@ def run_monitor(
     payload["include_tags"] = True
     campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
     search_headers = build_headers(cookie, config.campaign_id, campaign_url)
-    user = current_user(search_headers) if config.claim else {}
+    user = current_user(search_headers, session=session)
+    credential_account = credential_account_summary(user)
+    update_status(
+        state="starting",
+        phase="credential_verified",
+        campaign_id=config.campaign_id,
+        claim=config.claim,
+        tag_count_filter=tag_count_filter,
+    )
+    if config.claim and config.coordination_url:
+        if not config.coordination_token:
+            message = "FEATHER_COORDINATION_URL is set but FEATHER_COORDINATION_TOKEN is missing."
+            emit(f"COORDINATION_ERROR {message}", flush=True)
+            update_status(
+                state="coordination_error",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                coordination_error=message,
+            )
+            return 2
+        coordination_config = CoordinationConfig(
+            url=config.coordination_url,
+            service_token=config.coordination_token,
+            owner_label=config.coordination_owner or default_owner_label(),
+            state_file=config.coordination_state_file,
+            search_ttl_seconds=config.coordination_search_ttl,
+            working_ttl_seconds=config.coordination_working_ttl,
+        )
+        coordination_lease = CoordinationLease(
+            coordination_config,
+            account_key_for_user(user),
+            config.campaign_id,
+        )
+        config._coordination_lease = coordination_lease
+        try:
+            coordination_lease.acquire()
+        except LeaseUnavailable as exc:
+            holder = exc.lease
+            owner = holder.get("owner_label") or "another operator"
+            phase = holder.get("phase") or "busy"
+            reason = f"Shared Feather account is already {phase} under {owner}."
+            emit(f"CLAIM_BLOCKED coordination owner={owner} phase={phase}", flush=True)
+            update_status(
+                state="blocked_coordination",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                blocking_reason=reason,
+                coordination_holder=holder,
+                coordination_owner=owner,
+                coordination_phase=phase,
+            )
+            return 0
+        except CoordinationError as exc:
+            message = str(exc)
+            emit(f"COORDINATION_ERROR {message}", flush=True)
+            update_status(
+                state="coordination_error",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                coordination_error=message,
+            )
+            return 2
+        emit(
+            f"COORDINATION_ACQUIRED account={coordination_lease.account_key} "
+            f"owner={coordination_config.owner_label}",
+            flush=True,
+        )
     if config.claim:
-        in_progress_task = find_current_in_progress_task(search_headers, config.campaign_id, config.page_size, user)
+        in_progress_task = find_current_in_progress_task(
+            search_headers,
+            config.campaign_id,
+            config.page_size,
+            user,
+            session=session,
+        )
         if in_progress_task:
             return stop_for_in_progress_task(
                 in_progress_task,
@@ -969,6 +1187,7 @@ def run_monitor(
         config.batch_id,
         config.batch_name,
         batch_regex,
+        session=session,
     )
     current_batch_search_ids = batch_search_id_list(search_payloads)
 
@@ -1035,6 +1254,7 @@ def run_monitor(
                     config.batch_id,
                     config.batch_name,
                     batch_regex,
+                    session=session,
                 )
                 current_batch_search_ids = batch_search_id_list(search_payloads)
                 batch_signature = tuple(current_batch_search_ids)
@@ -1063,7 +1283,7 @@ def run_monitor(
         if config.batch_name or batch_regex:
             probe_payload = campaign_search_payload(payload)
             try:
-                probe_data = poll_once(search_headers, probe_payload)
+                probe_data = poll_once(search_headers, probe_payload, session=session)
                 page_searches += 1
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 if config.once:
@@ -1079,11 +1299,21 @@ def run_monitor(
                 campaign_page_total = search_page_count(probe_data, probe_payload)
                 if campaign_page_total is not None and campaign_page_total < CAMPAIGN_SEARCH_PAGE_THRESHOLD:
                     try:
-                        campaign_pages = poll_all_pages(
-                            search_headers,
-                            probe_payload,
-                            first_page=probe_data,
-                        )
+                        if stop_event is None:
+                            campaign_pages = poll_all_pages(
+                                search_headers,
+                                probe_payload,
+                                first_page=probe_data,
+                                session=session,
+                            )
+                        else:
+                            campaign_pages = poll_all_pages(
+                                search_headers,
+                                probe_payload,
+                                first_page=probe_data,
+                                stop_requested=stop_requested,
+                                session=session,
+                            )
                     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                         if config.once:
                             raise
@@ -1114,7 +1344,19 @@ def run_monitor(
 
         for batch_id, search_payload in searches_to_run:
             try:
-                page_responses = poll_all_pages(search_headers, search_payload)
+                if stop_event is None:
+                    page_responses = poll_all_pages(
+                        search_headers,
+                        search_payload,
+                        session=session,
+                    )
+                else:
+                    page_responses = poll_all_pages(
+                        search_headers,
+                        search_payload,
+                        stop_requested=stop_requested,
+                        session=session,
+                    )
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 if config.once:
                     raise
@@ -1149,32 +1391,41 @@ def run_monitor(
                         seen_poll_task_ids.add(task_id)
                         response_by_task_id[task_id] = data
                     tasks.append(task)
-        emit(
-            f"[{now}] tasks={len(tasks)} batch_searches={len(searches_to_run)} "
-            f"page_searches={page_searches} search_mode={search_mode}",
-            flush=True,
-        )
-        if tasks:
-            emit_task_tag_counts(tasks, emit)
         poll_error_fields: dict[str, Any] = {}
         if poll_errors:
             poll_error_fields = {
                 "poll_error_count": len(poll_errors),
                 "last_error": str(poll_errors[-1][1])[:500],
             }
-        update_status(
-            state="monitoring",
-            phase="polling_with_errors" if poll_errors else "polling",
-            campaign_id=config.campaign_id,
-            claim=config.claim,
-            batch_regex=batch_regex,
-            tag_count_filter=tag_count_filter,
-            active_batch_matches=len(allowed_batch_refs),
-            server_batch_filters=current_batch_search_ids,
-            unclaimed_count=len(tasks),
-            last_poll=now,
-            **poll_error_fields,
-        )
+
+        poll_observation_emitted = False
+
+        def emit_poll_observation() -> None:
+            nonlocal poll_observation_emitted
+            if poll_observation_emitted:
+                return
+            poll_observation_emitted = True
+            emit(
+                f"[{now}] tasks={len(tasks)} batch_searches={len(searches_to_run)} "
+                f"page_searches={page_searches} search_mode={search_mode}",
+                flush=True,
+            )
+            if tasks:
+                emit_task_tag_counts(tasks, emit)
+            update_status(
+                state="monitoring",
+                phase="polling_with_errors" if poll_errors else "polling",
+                campaign_id=config.campaign_id,
+                claim=config.claim,
+                batch_regex=batch_regex,
+                tag_count_filter=tag_count_filter,
+                active_batch_matches=len(allowed_batch_refs),
+                server_batch_filters=current_batch_search_ids,
+                unclaimed_count=len(tasks),
+                search_pages=page_searches,
+                last_poll=now,
+                **poll_error_fields,
+            )
 
         for task in tasks:
             if stop_requested():
@@ -1198,20 +1449,17 @@ def run_monitor(
             seen.add(task_id)
             title = task_log_title(task)
             current_tag_count = task_tag_count(task)
-            if batch_regex:
-                emit(
-                    f"FOUND {task_id}: {title} regex={batch_regex} "
-                    f"tag_count={tag_count_label(current_tag_count)} "
-                    f"batch_name={task_batch_name_label(task)}",
-                    flush=True,
-                )
-            else:
-                emit(f"FOUND {task_id}: {title}", flush=True)
             summary = batch_summary(task)
-            if summary:
-                emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
+            save_path = config.save or None
+            claim_succeeded = False
             if config.claim:
-                in_progress_task = find_current_in_progress_task(search_headers, config.campaign_id, config.page_size, user)
+                in_progress_task = find_current_in_progress_task(
+                    search_headers,
+                    config.campaign_id,
+                    config.page_size,
+                    user,
+                    session=session,
+                )
                 if in_progress_task:
                     return stop_for_in_progress_task(
                         in_progress_task,
@@ -1222,38 +1470,36 @@ def run_monitor(
                         emit,
                         update_status,
                     )
-            update_status(
-                state="found",
-                campaign_id=config.campaign_id,
-                claim=config.claim,
-                task_id=task_id,
-                title=title,
-                batch=summary,
-                tag_count=current_tag_count,
-                tag_count_filter=tag_count_filter,
-            )
-
-            save_path = config.save or None
-            save_found(save_path, task, response_by_task_id.get(str(task_id), {"tasks": tasks}))
-            if save_path:
-                emit(f"SAVED {save_path}", flush=True)
-
-            if stop_requested():
-                emit("STOPPED", flush=True)
-                update_status(
-                    state="stopped",
-                    campaign_id=config.campaign_id,
-                    claim=config.claim,
-                    batch_regex=batch_regex,
-                    tag_count_filter=tag_count_filter,
-                    active_batch_matches=len(allowed_batch_refs),
-                    server_batch_filters=current_batch_search_ids,
-                    unclaimed_count=len(tasks),
-                    last_poll=now,
-                )
-                return 0
-
-            if config.claim:
+                if coordination_lease is not None:
+                    try:
+                        coordination_lease.ensure_owned()
+                    except CoordinationError as exc:
+                        message = str(exc)
+                        emit(f"CLAIM_BLOCKED coordination_lost error={message}", flush=True)
+                        update_status(
+                            state="blocked_coordination",
+                            campaign_id=config.campaign_id,
+                            claim=config.claim,
+                            task_id=task_id,
+                            title=title,
+                            blocking_reason="Shared-account coordination lease was lost before claim.",
+                            coordination_error=message,
+                        )
+                        return 0
+                if stop_requested():
+                    emit("STOPPED", flush=True)
+                    update_status(
+                        state="stopped",
+                        campaign_id=config.campaign_id,
+                        claim=config.claim,
+                        batch_regex=batch_regex,
+                        tag_count_filter=tag_count_filter,
+                        active_batch_matches=len(allowed_batch_refs),
+                        server_batch_filters=current_batch_search_ids,
+                        unclaimed_count=len(tasks),
+                        last_poll=now,
+                    )
+                    return 0
                 claim_headers = build_headers(
                     cookie,
                     config.campaign_id,
@@ -1268,7 +1514,27 @@ def run_monitor(
                     config.page_size,
                     task_id,
                     emit=emit,
+                    session=session,
+                    user=user,
                 )
+
+            if batch_regex:
+                emit(
+                    f"FOUND {task_id}: {title} regex={batch_regex} "
+                    f"tag_count={tag_count_label(current_tag_count)} "
+                    f"batch_name={task_batch_name_label(task)}",
+                    flush=True,
+                )
+            else:
+                emit(f"FOUND {task_id}: {title}", flush=True)
+            if summary:
+                emit("BATCH " + json.dumps(summary, ensure_ascii=False), flush=True)
+            save_found(save_path, task, response_by_task_id.get(str(task_id), {"tasks": tasks}))
+            if save_path:
+                emit(f"SAVED {save_path}", flush=True)
+            emit_poll_observation()
+
+            if config.claim:
                 if not claim_succeeded:
                     emit(f"CLAIM_FAILED_CONTINUING {task_id}", flush=True)
                     update_status(
@@ -1281,6 +1547,16 @@ def run_monitor(
                         tag_count_filter=tag_count_filter,
                     )
                     continue
+
+                coordination_error = None
+                if coordination_lease is not None:
+                    try:
+                        coordination_lease.mark_working(str(task_id))
+                        emit(f"COORDINATION_WORKING task={task_id}", flush=True)
+                    except CoordinationError as exc:
+                        coordination_lease.phase = "working_unconfirmed"
+                        coordination_error = str(exc)
+                        emit(f"COORDINATION_WORKING_FAILED task={task_id} error={coordination_error}", flush=True)
                 update_status(
                     state="claimed",
                     campaign_id=config.campaign_id,
@@ -1290,17 +1566,31 @@ def run_monitor(
                     tag_count=current_tag_count,
                     tag_count_filter=tag_count_filter,
                     saved=save_path,
+                    coordination_error=coordination_error,
                 )
                 emit(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
+            else:
+                update_status(
+                    state="found",
+                    campaign_id=config.campaign_id,
+                    claim=config.claim,
+                    task_id=task_id,
+                    title=title,
+                    batch=summary,
+                    tag_count=current_tag_count,
+                    tag_count_filter=tag_count_filter,
+                )
+                if not config.open_task:
+                    emit(f"FOUND_CONTINUING {task_id}", flush=True)
+                    continue
 
-            if not config.claim and not config.open_task:
-                emit(f"FOUND_CONTINUING {task_id}", flush=True)
-                continue
-
+            emit_poll_observation()
             emit("\a", end="", flush=True)
             if config.open_task:
                 webbrowser.open(task_url(task_id))
             return 0
+
+        emit_poll_observation()
 
         if stop_requested():
             emit("STOPPED", flush=True)
@@ -1329,6 +1619,7 @@ def run_monitor(
             active_batch_matches=len(allowed_batch_refs),
             server_batch_filters=current_batch_search_ids,
             unclaimed_count=len(tasks),
+            search_pages=page_searches,
             next_sleep_seconds=round(delay, 2),
             last_poll=now,
             **poll_error_fields,
@@ -1350,6 +1641,31 @@ def run_monitor(
                 return 0
         else:
             time.sleep(delay)
+
+
+def run_monitor(
+    config: MonitorConfig,
+    stop_event: Any | None = None,
+    emit: Emit = print,
+    status_callback: StatusCallback | None = None,
+) -> int:
+    session = create_http_session()
+    try:
+        return _run_monitor_impl(
+            config,
+            stop_event=stop_event,
+            emit=emit,
+            status_callback=status_callback,
+            session=session,
+        )
+    finally:
+        try:
+            session.close()
+        finally:
+            lease = config._coordination_lease
+            config._coordination_lease = None
+            if lease is not None:
+                lease.close()
 
 
 def recoverable_poll_error_name(exc: requests.exceptions.RequestException) -> str:
@@ -1386,6 +1702,12 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         task_kind=args.task_kind,
         tag_count_min=tag_count_min,
         tag_count_max=tag_count_max,
+        coordination_url=args.coordination_url,
+        coordination_token=args.coordination_token,
+        coordination_owner=args.coordination_owner,
+        coordination_state_file=args.coordination_state_file,
+        coordination_search_ttl=args.coordination_search_ttl,
+        coordination_working_ttl=args.coordination_working_ttl,
     )
 
 

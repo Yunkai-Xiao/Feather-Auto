@@ -21,6 +21,8 @@ scripted checks and debugging.
 - Keeps a local event log and status JSON for debugging.
 - Provides a local dashboard with Start, Stop, campaign selection, cURL paste,
   runtime metrics, current task details, and live log tail.
+- Shows the Feather account verified by `whoami` for the credential currently
+  searching, without exposing cookies, authorization headers, or tokens.
 
 ## Important Limits
 
@@ -263,14 +265,77 @@ Behavior by mode:
 | Off | Off | Observe mode. Logs each new matching task as `FOUND_CONTINUING` and keeps polling. |
 | Off | On | Alert mode. Opens the first matching task and stops. |
 | On | Off | Claim mode. Attempts to claim matching tasks. Stops only after a successful claim. |
-| On | On | Claim and open mode. Claims, verifies, opens the task on success, then stops. |
+| On | On | Claim and open mode. Claims, confirms the result, opens the task on success, then stops. |
 
 If a claim loses the race, for example Feather returns `NOT_FOUND`, the monitor
 logs `CLAIM_FAILED_CONTINUING` and continues polling.
 
+Each server-side batch search follows the API pagination metadata until all
+available task pages have been checked; `--page-size` controls requests per
+page, not the total number of tasks considered.
+
 Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
 campaign. If one exists, it stops without claiming and shows a blocking alert.
+
+Each worker reuses one HTTP session for batch lookup, paginated search, safety
+checks, and claim requests. After a matching task passes the safety checks, the
+claim request is sent before `FOUND` logging, status-file updates, or artifact
+writes. A definitive GraphQL success or error is used directly; only an
+ambiguous response triggers the slower follow-up assignment search.
+
+## Shared-Account Coordination
+
+If several people use the same Feather account from different computers, run
+the included coordination service on one small server. The server keeps a
+SQLite database locally and exposes atomic lease operations over HTTP. Do not
+put the SQLite file itself on a synced or network drive.
+
+On the server, from a copy of this repository:
+
+```bash
+export FEATHER_COORDINATOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python3 -m feather_auto.coordination_server --host 0.0.0.0 --port 8787 --db /var/lib/feather/coordination.sqlite3
+```
+
+Save the generated token in the server's service configuration. If the server
+is reachable over the public internet, put it behind HTTPS and a firewall; do
+not send the bearer token over public plain HTTP. `GET /healthz` is available
+for a basic health check.
+
+On each Windows computer, set the same server URL and token, plus a different
+human-readable operator name:
+
+```powershell
+[Environment]::SetEnvironmentVariable("FEATHER_COORDINATION_URL", "https://your-server.example", "User")
+[Environment]::SetEnvironmentVariable("FEATHER_COORDINATION_TOKEN", "the-shared-random-token", "User")
+[Environment]::SetEnvironmentVariable("FEATHER_COORDINATION_OWNER", "Yunkai", "User")
+```
+
+Open a new PowerShell or restart the dashboard after setting them. Coordination
+is optional and remains disabled when `FEATHER_COORDINATION_URL` is unset.
+When enabled in claim mode:
+
+1. The monitor atomically acquires the Feather account before searching.
+2. A short `searching` lease is renewed in the background. A crash or lost
+   connection lets it expire automatically after about two minutes.
+3. Immediately before claim, ownership is checked again. Failure stops claim.
+4. A successful claim changes the lease to `working` for up to 12 hours.
+5. After finishing the task, click `Task done / release account` in the
+   dashboard. The next operator can then start immediately.
+
+The dashboard identifies who holds a blocked account and shows whether they are
+`searching` or `working`. A working lease is also saved locally at
+`outputs/coordination_lease.json`. If needed, release that saved lease from the
+repo root with:
+
+```powershell
+python -m feather_auto.coordination release
+```
+
+The server clamps searching leases to 30-300 seconds and working leases to a
+maximum of 24 hours. Client defaults can be changed with
+`FEATHER_COORDINATION_SEARCH_TTL` and `FEATHER_COORDINATION_WORKING_TTL`.
 
 When started from the dashboard, the worker also requires a live dashboard
 session heartbeat. If the dashboard page is closed or disconnected for about
@@ -290,6 +355,9 @@ Main states:
 - `found`: a matching task was found
 - `blocked_in_progress`: claim mode stopped because this account already has an
   in-progress task
+- `blocked_coordination`: another operator holds the shared-account lease
+- `coordination_error`: the configured coordinator could not safely authorize
+  claim, so claim mode stopped
 - `claim_failed_continuing`: claim attempt failed, monitor continues
 - `claimed`: a task was successfully claimed and the worker stopped
 - `stopped_inactive`: the dashboard session heartbeat was lost, so the worker
@@ -421,11 +489,12 @@ Get-Content .\outputs\feather-auto.log -Wait -Tail 80
 When claim mode is enabled, the monitor:
 
 1. Queries `whoami`.
-2. Checks for an existing `in_progress` task assigned to the current account.
-3. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
-4. Searches for the task again.
-5. Prints a `VERIFY` line with expected user id/email, assignment fields, and
-   workflow status.
+2. Acquires the optional shared-account coordination lease.
+3. Checks for an existing `in_progress` task assigned to the current account.
+4. Revalidates the lease immediately before claim.
+5. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
+6. Uses a definitive GraphQL result directly. Only an ambiguous response
+   triggers a follow-up assignment search and `VERIFY` line.
 
 The monitor treats the claim as successful when Feather confirms the task is in
 progress for the current user. On success it prints:
@@ -446,6 +515,7 @@ outputs/raw_creation_claim_monitor.log
 outputs/raw_creation_claim_status.json
 outputs/last_claimed_raw_creation_task.json
 outputs/dashboard_server.pid
+outputs/coordination_lease.json
 ```
 
 Do not commit or share these files.
@@ -498,6 +568,7 @@ waiting for the next randomized poll interval.
 Before pushing changes:
 
 ```powershell
-python -m py_compile .\feather_auto\cli.py .\feather_auto\dashboard_server.py
+python -m py_compile .\feather_auto\cli.py .\feather_auto\coordination.py .\feather_auto\coordination_server.py .\feather_auto\dashboard_server.py
+python -m unittest discover -s tests -v
 git diff --check
 ```

@@ -29,8 +29,10 @@ class AdaptiveSearchTests(unittest.TestCase):
     @patch("feather_auto.cli.resolve_batch_searches")
     @patch("feather_auto.cli.request_parts_from_curl")
     @patch("feather_auto.cli.read_curl_text", return_value="curl")
+    @patch("feather_auto.cli.current_user", return_value={"id": "user-1", "email": "user@example.com"})
     def test_small_campaign_uses_one_complete_campaign_scan(
         self,
+        _current_user,
         _read_curl,
         request_parts,
         resolve_searches,
@@ -47,15 +49,22 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.assertEqual(0, run_monitor(self.config(), emit=lambda *_args, **_kwargs: None))
 
         campaign_payload = {"page": 0, "page_size": 20, "include_tags": True}
-        poll_all_pages.assert_called_once_with(ANY, campaign_payload, first_page=probe)
+        poll_all_pages.assert_called_once_with(
+            ANY,
+            campaign_payload,
+            first_page=probe,
+            session=ANY,
+        )
 
     @patch("feather_auto.cli.poll_all_pages")
     @patch("feather_auto.cli.poll_once")
     @patch("feather_auto.cli.resolve_batch_searches")
     @patch("feather_auto.cli.request_parts_from_curl")
     @patch("feather_auto.cli.read_curl_text", return_value="curl")
+    @patch("feather_auto.cli.current_user", return_value={"id": "user-1", "email": "user@example.com"})
     def test_four_page_campaign_uses_complete_per_batch_scans(
         self,
+        _current_user,
         _read_curl,
         request_parts,
         resolve_searches,
@@ -75,7 +84,10 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.assertEqual(0, run_monitor(self.config(), emit=lambda *_args, **_kwargs: None))
 
         self.assertEqual(
-            [call(ANY, searches[0][1]), call(ANY, searches[1][1])],
+            [
+                call(ANY, searches[0][1], session=ANY),
+                call(ANY, searches[1][1], session=ANY),
+            ],
             poll_all_pages.call_args_list,
         )
 

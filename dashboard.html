@@ -53,7 +53,7 @@
       .topbar {
         min-height: 64px;
         display: grid;
-        grid-template-columns: minmax(260px, 1fr) auto auto;
+        grid-template-columns: minmax(260px, 1fr) minmax(260px, 390px) auto auto;
         align-items: center;
         gap: 16px;
         padding: 12px 20px;
@@ -85,6 +85,52 @@
         gap: 8px;
         align-items: center;
         flex-wrap: wrap;
+      }
+
+      .credential-pill {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        align-items: center;
+        column-gap: 8px;
+        min-width: 0;
+        min-height: 38px;
+        padding: 6px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .credential-pill::before {
+        content: "";
+        grid-row: 1 / span 2;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #9ca3af;
+      }
+
+      .credential-pill.verified::before {
+        background: var(--success);
+      }
+
+      .credential-label {
+        color: #aab3c1;
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.06em;
+        line-height: 1.1;
+        text-transform: uppercase;
+      }
+
+      .credential-account {
+        overflow: hidden;
+        color: #f9fafb;
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .shell {
@@ -524,6 +570,8 @@
       }
 
       .dot.blocked_in_progress,
+      .dot.blocked_coordination,
+      .dot.coordination_error,
       .dot.stopped_inactive,
       .dot.stopping_inactive,
       .dot.error {
@@ -785,6 +833,11 @@
           grid-template-columns: 1fr;
         }
 
+        .credential-pill {
+          width: 100%;
+          max-width: none;
+        }
+
         .shell {
           grid-template-columns: 1fr;
         }
@@ -834,6 +887,10 @@
         <div>
           <h1>Feather Auto Monitor</h1>
           <div class="pathline" id="paths">Loading paths...</div>
+        </div>
+        <div class="credential-pill" id="credentialAccountPill" aria-live="polite">
+          <span class="credential-label" id="credentialAccountLabel">Credential account</span>
+          <span class="credential-account" id="credentialAccount">Not verified</span>
         </div>
         <div class="run-pill"><span class="dot" id="dot"></span><span id="running">stopped</span></div>
         <div class="top-actions">
@@ -1014,7 +1071,10 @@
           <section class="panel">
             <div class="panel-header">
               <h2 class="panel-title">Claim result</h2>
-              <span class="small" id="campaignView">-</span>
+              <div class="inline-actions">
+                <span class="small" id="campaignView">-</span>
+                <button id="releaseCoordination" type="button" class="danger" hidden>Task done / release account</button>
+              </div>
             </div>
             <div class="panel-body">
               <div class="claim-result" id="claimResult">
@@ -1045,6 +1105,10 @@
                 <div class="kv">
                   <span class="label">Review pipeline</span>
                   <div class="kv-value muted" id="reviewState">-</div>
+                </div>
+                <div class="kv">
+                  <span class="label">Shared account</span>
+                  <div class="kv-value muted" id="coordinationState">not configured</div>
                 </div>
               </div>
             </div>
@@ -1497,7 +1561,7 @@
           return {
             tone: "success",
             title: "Claimed",
-            detail: [...taskParts, status.saved ? `saved ${status.saved}` : ""].filter(Boolean).join(" | ") || "Task was claimed.",
+            detail: [...taskParts, status.saved ? `saved ${status.saved}` : "", status.coordination_error ? `coordination warning: ${status.coordination_error}` : ""].filter(Boolean).join(" | ") || "Task was claimed.",
           };
         }
         if (state === "claim_failed_continuing") {
@@ -1512,6 +1576,21 @@
             tone: "danger",
             title: "Blocked by existing in-progress task",
             detail: status.blocking_reason || taskParts.join(" | ") || "Finish or release the existing task before claiming.",
+          };
+        }
+        if (state === "blocked_coordination") {
+          const holder = status.coordination_holder || {};
+          return {
+            tone: "danger",
+            title: "Blocked by shared-account lock",
+            detail: status.blocking_reason || `${holder.owner_label || "Another operator"} is ${holder.phase || "using this account"}.`,
+          };
+        }
+        if (state === "coordination_error") {
+          return {
+            tone: "danger",
+            title: "Coordination unavailable",
+            detail: status.coordination_error || "Claiming stopped because the shared-account safety check could not be completed.",
           };
         }
         if (state === "found") {
@@ -1648,11 +1727,15 @@
         const taskId = status.in_progress_task_id || status.task_id || "";
         if (localStorage.getItem(inProgressAlertKey(taskId))) return;
         $("inProgressAlertTask").textContent = [
+          status.coordination_owner ? `operator: ${status.coordination_owner}` : "",
+          status.coordination_phase ? `account state: ${status.coordination_phase}` : "",
           status.in_progress_title || status.title ? `title: ${status.in_progress_title || status.title}` : "",
           taskId ? `task: ${taskId}` : "",
           status.campaign_id ? `campaign: ${status.campaign_id}` : "",
           status.blocking_reason || "",
         ].filter(Boolean).join("\n") || "Claiming stopped.";
+        const coordinated = status.state === "blocked_coordination";
+        $("inProgressAlertTitle").textContent = coordinated ? "Shared account is already in use" : "Existing in-progress task";
         $("openInProgressTask").hidden = !status.in_progress_task_url;
         $("openInProgressTask").dataset.url = status.in_progress_task_url || "";
         $("inProgressAlert").classList.add("show");
@@ -1673,7 +1756,7 @@
           showTimerAlert(status);
           return;
         }
-        if (status.state === "blocked_in_progress") {
+        if (status.state === "blocked_in_progress" || status.state === "blocked_coordination") {
           hideTimerAlert();
           showInProgressAlert(status);
           return;
@@ -1877,6 +1960,19 @@
         setText("mode", `${modeText(status)} / ${status.review_mode_name || currentModeConfig()?.name || $("reviewMode").value}`);
         setText("updated", ageText(status.updated_at));
         setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
+        const credential = status.credential_account || {};
+        const credentialLabel = credential.label || (running ? "Checking credential..." : "Not verified");
+        setText(
+          "credentialAccountLabel",
+          running ? "Active credential" : (status.credential_account ? "Last credential" : "Credential account"),
+        );
+        setText("credentialAccount", credentialLabel);
+        $("credentialAccountPill").classList.toggle("verified", Boolean(running && status.credential_account));
+        $("credentialAccountPill").title = [
+          `Credential account: ${credentialLabel}`,
+          credential.display_name && credential.display_name !== credentialLabel ? credential.display_name : "",
+          credential.user_id ? `Feather user ID: ${credential.user_id}` : "",
+        ].filter(Boolean).join("\n");
         setText("curlSaved", latest.curl_saved ? "saved" : "empty");
         setText("campaignView", status.campaign_name || status.campaign_id || $("campaignId").selectedOptions[0]?.textContent);
         setText("taskId", status.task_id);
@@ -1885,6 +1981,16 @@
         setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
         setText("reviewState", reviewText(status));
+        const coordination = latest.coordination || {};
+        const holder = status.coordination_holder || {};
+        setText(
+          "coordinationState",
+          coordination.enabled
+            ? `${status.coordination_phase || holder.phase || "ready"}${status.coordination_owner || holder.owner_label ? ` / ${status.coordination_owner || holder.owner_label}` : ""}`
+            : "not configured"
+        );
+        $("releaseCoordination").hidden = !coordination.working_lease_saved;
+        $("releaseCoordination").disabled = running;
         renderSeenTasks(pollSnapshot, status);
         renderClaimResult(status, pollSnapshot);
         await refreshReviewOutput(status);
@@ -1899,8 +2005,10 @@
         $("stop").disabled = !running;
         $("stop2").disabled = !running;
         if (!$("curlText").value.trim()) currentCurlValidation();
-        if (state === "blocked_in_progress") {
+        if (state === "blocked_in_progress" || state === "blocked_coordination") {
           setMessage(status.blocking_reason || "Claiming stopped because an in-progress task already exists.");
+        } else if (state === "coordination_error") {
+          setMessage(status.coordination_error || "Shared-account coordination is unavailable; claim was stopped.");
         } else if (state === "stopped_inactive" || state === "stopping_inactive") {
           setMessage(status.stop_reason || "Stopped because the active dashboard heartbeat was lost.");
         }
@@ -1951,6 +2059,14 @@
         await refresh();
       }
 
+      async function releaseCoordination() {
+        if (!window.confirm("Release this shared Feather account after the task is finished?")) return;
+        setMessage("Releasing shared account...");
+        const result = await api("/api/release-coordination", { method: "POST", body: "{}" });
+        setMessage(result.released ? "Shared account released." : (result.reason || "No saved lease was released."));
+        await refresh();
+      }
+
       async function saveCurl() {
         const validation = currentCurlValidation();
         if (!validation.ok) {
@@ -1990,6 +2106,7 @@
       $("start").addEventListener("click", () => start().catch((error) => setMessage(error.message)));
       $("stop").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
       $("stop2").addEventListener("click", () => stop().catch((error) => setMessage(error.message)));
+      $("releaseCoordination").addEventListener("click", () => releaseCoordination().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
       $("testBatchRegex").addEventListener("click", () => testBatchRegex().catch((error) => renderBatchRegexTest(null, error.message)));

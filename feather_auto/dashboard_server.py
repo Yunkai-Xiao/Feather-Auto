@@ -29,6 +29,7 @@ from .cli import (
     run_monitor,
     tag_count_filter_payload,
 )
+from .coordination import default_owner_label, release_saved_lease
 from .review_task_slides import run_review_pipeline
 
 
@@ -40,6 +41,7 @@ CONVERSATION_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_conversation_widget.
 LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
+COORDINATION_STATE_FILE = OUTPUTS / "coordination_lease.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
 REVIEW_OUTPUT_ROOT = OUTPUTS / "content_review"
 AESTHETIC_RANKING_CAMPAIGN_ID = "929712fc-fa2a-45bc-94df-2ae6d445b2ca"
@@ -82,6 +84,15 @@ ACTIVE_SESSION_CHECK_SECONDS = 1.0
 INACTIVE_SESSION_REASON = (
     "Dashboard heartbeat stopped. Search and claim were stopped to prevent background claims."
 )
+
+
+def coordination_settings() -> dict[str, Any]:
+    url = os.environ.get("FEATHER_COORDINATION_URL", "").strip()
+    return {
+        "enabled": bool(url),
+        "owner_label": default_owner_label(),
+        "working_lease_saved": COORDINATION_STATE_FILE.exists(),
+    }
 
 
 def campaign_name(campaign_id: str) -> str:
@@ -508,7 +519,9 @@ class MonitorController:
                 state = self._status.get("state")
                 if state not in {
                     "blocked_in_progress",
+                    "blocked_coordination",
                     "claimed",
+                    "coordination_error",
                     "stopped",
                     "stopped_inactive",
                     "stopping_inactive",
@@ -558,6 +571,12 @@ class MonitorController:
             open_task=bool(config.get("openTask", True)),
             tag_count_min=tag_count_min,
             tag_count_max=tag_count_max,
+            coordination_url=os.environ.get("FEATHER_COORDINATION_URL"),
+            coordination_token=os.environ.get("FEATHER_COORDINATION_TOKEN"),
+            coordination_owner=os.environ.get("FEATHER_COORDINATION_OWNER"),
+            coordination_state_file=str(COORDINATION_STATE_FILE),
+            coordination_search_ttl=int(os.environ.get("FEATHER_COORDINATION_SEARCH_TTL", "120")),
+            coordination_working_ttl=int(os.environ.get("FEATHER_COORDINATION_WORKING_TTL", str(12 * 60 * 60))),
         )
 
         with self._lock:
@@ -657,6 +676,21 @@ class MonitorController:
             self._status = {**self._status, "state": "stopping"}
             return True
 
+    def release_coordination(self) -> dict[str, Any]:
+        if self._running_unlocked():
+            raise RuntimeError("Stop the monitor before releasing the shared-account lease.")
+        token = os.environ.get("FEATHER_COORDINATION_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError("FEATHER_COORDINATION_TOKEN is not configured.")
+        result = release_saved_lease(COORDINATION_STATE_FILE, token)
+        with self._lock:
+            self._status = {
+                **self._status,
+                "coordination_phase": "released" if result.get("released") else self._status.get("coordination_phase"),
+                "coordination_released": bool(result.get("released")),
+            }
+        return result
+
     def state(self) -> dict[str, Any]:
         with self._lock:
             self._stop_inactive_session_unlocked()
@@ -677,6 +711,7 @@ class MonitorController:
             "curl_saved": CURL_FILE.exists(),
             "campaigns": CAMPAIGNS,
             "review_modes": REVIEW_MODES,
+            "coordination": coordination_settings(),
             "runtime": dashboard_runtime(),
             "status": status,
             "log_tail": tail(LOG_FILE),
@@ -706,6 +741,10 @@ def stop_monitor() -> bool:
 
 def heartbeat_monitor(session_id: str) -> dict[str, Any]:
     return MONITOR.heartbeat(session_id)
+
+
+def release_coordination() -> dict[str, Any]:
+    return MONITOR.release_coordination()
 
 
 def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
@@ -774,6 +813,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = read_json_body(self)
                 session_id = str(payload.get("sessionId") or "").strip()
                 write_json(self, 200, {"ok": True, **heartbeat_monitor(session_id)})
+                return
+            if self.path == "/api/release-coordination":
+                write_json(self, 200, {"ok": True, **release_coordination(), "state": dashboard_state()})
                 return
             if self.path == "/api/test-batch-regex":
                 payload = read_json_body(self)
