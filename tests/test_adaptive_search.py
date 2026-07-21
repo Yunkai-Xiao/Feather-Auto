@@ -45,8 +45,16 @@ class AdaptiveSearchTests(unittest.TestCase):
         probe = {"tasks": [], "pagination": {"page": 0, "page_size": 20, "count": 40}}
         poll_once.return_value = probe
         poll_all_pages.return_value = [probe]
+        statuses = []
 
-        self.assertEqual(0, run_monitor(self.config(), emit=lambda *_args, **_kwargs: None))
+        self.assertEqual(
+            0,
+            run_monitor(
+                self.config(),
+                emit=lambda *_args, **_kwargs: None,
+                status_callback=statuses.append,
+            ),
+        )
 
         campaign_payload = {"page": 0, "page_size": 20, "include_tags": True}
         poll_all_pages.assert_called_once_with(
@@ -55,6 +63,9 @@ class AdaptiveSearchTests(unittest.TestCase):
             first_page=probe,
             session=ANY,
         )
+        sample = next(status for status in statuses if status.get("history_sample_complete"))
+        self.assertEqual(sample["total_unclaimed_count"], 40)
+        self.assertEqual(sample["matching_count"], 0)
 
     @patch("feather_auto.cli.poll_all_pages")
     @patch("feather_auto.cli.poll_once")

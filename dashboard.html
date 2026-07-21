@@ -89,7 +89,7 @@
 
       .credential-pill {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-columns: auto minmax(0, 1fr) auto;
         grid-template-rows: auto auto;
         align-items: center;
         column-gap: 8px;
@@ -131,6 +131,20 @@
         line-height: 1.25;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .credential-verify {
+        grid-column: 3;
+        grid-row: 1 / span 2;
+        min-height: 28px;
+        padding: 4px 8px;
+        border-color: rgba(255, 255, 255, 0.24);
+        color: #f9fafb;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .credential-verify:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.16);
       }
 
       .shell {
@@ -580,7 +594,7 @@
 
       .metric-grid {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 0;
       }
 
@@ -612,6 +626,93 @@
         margin-top: 4px;
         color: var(--muted);
         font-size: 12px;
+      }
+
+      .history-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .history-controls select {
+        width: auto;
+        min-height: 30px;
+        padding: 4px 28px 4px 8px;
+        font-size: 12px;
+      }
+
+      .history-body {
+        padding: 12px;
+      }
+
+      .history-legend {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .history-key {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .history-key::before {
+        content: "";
+        width: 18px;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--accent);
+      }
+
+      .history-key.matching::before {
+        background: var(--warning);
+      }
+
+      .history-chart-wrap {
+        width: 100%;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: #fbfcfe;
+      }
+
+      .history-chart {
+        display: block;
+        width: 100%;
+        min-height: 240px;
+      }
+
+      .history-table {
+        width: 100%;
+        min-width: 560px;
+        margin-top: 12px;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      .history-table th,
+      .history-table td {
+        padding: 8px 10px;
+        border-top: 1px solid var(--border);
+        text-align: left;
+      }
+
+      .history-table th {
+        color: var(--muted);
+        background: #fbfcfe;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .history-table td:nth-child(n + 2) {
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
       }
 
       .task-grid {
@@ -891,6 +992,7 @@
         <div class="credential-pill" id="credentialAccountPill" aria-live="polite">
           <span class="credential-label" id="credentialAccountLabel">Credential account</span>
           <span class="credential-account" id="credentialAccount">Not verified</span>
+          <button class="credential-verify" id="verifyCredential" type="button">Verify</button>
         </div>
         <div class="run-pill"><span class="dot" id="dot"></span><span id="running">stopped</span></div>
         <div class="top-actions">
@@ -1022,9 +1124,14 @@
                 <span class="metric-note" id="phase">-</span>
               </div>
               <div class="metric">
-                <span class="label">Unclaimed</span>
+                <span class="label">Total tasks</span>
                 <span class="metric-value" id="unclaimed">-</span>
                 <span class="metric-note" id="lastPoll">-</span>
+              </div>
+              <div class="metric">
+                <span class="label">Eligible</span>
+                <span class="metric-value" id="eligible">-</span>
+                <span class="metric-note" id="eligibleNote">current filters</span>
               </div>
               <div class="metric">
                 <span class="label">Next poll</span>
@@ -1040,6 +1147,47 @@
                 <span class="label">Mode</span>
                 <span class="metric-value" id="mode">-</span>
                 <span class="metric-note" id="updated">-</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Task history</h2>
+                <span class="small" id="historyMeta">waiting for first snapshot</span>
+              </div>
+              <div class="history-controls">
+                <label for="historyRange" class="small">Range</label>
+                <select id="historyRange">
+                  <option value="24">24 hours</option>
+                  <option value="168" selected>7 days</option>
+                  <option value="720">30 days</option>
+                </select>
+              </div>
+            </div>
+            <div class="history-body">
+              <div class="history-legend" aria-hidden="true">
+                <span class="history-key">All unclaimed tasks</span>
+                <span class="history-key matching">Eligible tasks</span>
+              </div>
+              <div class="history-chart-wrap">
+                <svg id="historyChart" class="history-chart" viewBox="0 0 900 260" role="img" aria-label="Task counts over time"></svg>
+              </div>
+              <div class="table-wrap">
+                <table class="history-table">
+                  <thead>
+                    <tr>
+                      <th>Observed</th>
+                      <th>Total</th>
+                      <th>Eligible</th>
+                      <th>Eligible rate</th>
+                    </tr>
+                  </thead>
+                  <tbody id="historyBody">
+                    <tr class="empty-row"><td colspan="4">Waiting for the first complete poll.</td></tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </section>
@@ -1167,6 +1315,7 @@
       let titleFlashTimer = null;
       let originalTitle = document.title;
       let activeSessionId = null;
+      let lastHistoryRenderSignature = "";
 
       const $ = (id) => document.getElementById(id);
 
@@ -1220,6 +1369,154 @@
         const then = new Date(iso.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
         const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
         return `${seconds}s ago`;
+      }
+
+      function nullableNumber(value) {
+        if (value == null || value === "") return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      function currentHistoryFilter(status) {
+        const useActiveStatus = Boolean(latest?.running);
+        const tagFilter = useActiveStatus ? (status.tag_count_filter || {}) : {};
+        return {
+          campaignId: useActiveStatus ? (status.campaign_id || effectiveCampaignId()) : effectiveCampaignId(),
+          batchRegex: useActiveStatus ? (status.batch_regex ?? $("batchRegex").value.trim()) : $("batchRegex").value.trim(),
+          tagMin: nullableNumber(useActiveStatus ? tagFilter.min : $("tagCountMin").value.trim()),
+          tagMax: nullableNumber(useActiveStatus ? tagFilter.max : $("tagCountMax").value.trim()),
+        };
+      }
+
+      function historyFilterLabel(filter) {
+        const tags = filter.tagMin == null && filter.tagMax == null
+          ? "any tags"
+          : `${filter.tagMin ?? 0}–${filter.tagMax ?? "∞"} tags`;
+        return `${filter.batchRegex || "all batches"} · ${tags}`;
+      }
+
+      function filteredHistoryRecords(history, status) {
+        const filter = currentHistoryFilter(status);
+        const rangeHours = Number($("historyRange").value || 168);
+        const cutoff = Date.now() - rangeHours * 60 * 60 * 1000;
+        const records = Array.isArray(history?.records) ? history.records : [];
+        return {
+          filter,
+          records: records.filter((record) => {
+            const observedAt = new Date(record.observed_at).getTime();
+            return record.campaign_id === filter.campaignId
+              && String(record.batch_regex || "") === String(filter.batchRegex || "")
+              && nullableNumber(record.tag_count_min) === filter.tagMin
+              && nullableNumber(record.tag_count_max) === filter.tagMax
+              && Number.isFinite(observedAt)
+              && observedAt >= cutoff;
+          }),
+        };
+      }
+
+      function renderTaskHistory(history, status, force = false) {
+        const { filter, records } = filteredHistoryRecords(history, status);
+        const signature = JSON.stringify({
+          range: $("historyRange").value,
+          filter,
+          records: records.map((record) => [record.observed_at, record.total_tasks, record.matching_tasks]),
+        });
+        if (!force && signature === lastHistoryRenderSignature) return;
+        lastHistoryRenderSignature = signature;
+
+        const interval = Number(history?.interval_minutes || 30);
+        setText(
+          "historyMeta",
+          records.length
+            ? `${records.length} snapshot${records.length === 1 ? "" : "s"} · every ${interval} min · ${historyFilterLabel(filter)}`
+            : `every ${interval} min · ${historyFilterLabel(filter)} · waiting for data`,
+        );
+
+        const svg = $("historyChart");
+        svg.replaceChildren();
+        const svgNs = "http://www.w3.org/2000/svg";
+        const addSvg = (name, attrs = {}, text = "") => {
+          const node = document.createElementNS(svgNs, name);
+          Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+          if (text) node.textContent = text;
+          svg.appendChild(node);
+          return node;
+        };
+
+        const body = $("historyBody");
+        body.replaceChildren();
+        if (!records.length) {
+          addSvg("text", { x: 450, y: 130, "text-anchor": "middle", fill: "#697384", "font-size": 14 }, "Waiting for the first complete 30-minute snapshot");
+          const row = document.createElement("tr");
+          row.className = "empty-row";
+          const cell = document.createElement("td");
+          cell.colSpan = 4;
+          cell.textContent = "Waiting for the first complete poll with the selected filters.";
+          row.appendChild(cell);
+          body.appendChild(row);
+          return;
+        }
+
+        const width = 900;
+        const height = 260;
+        const margin = { left: 52, right: 18, top: 18, bottom: 40 };
+        const plotWidth = width - margin.left - margin.right;
+        const plotHeight = height - margin.top - margin.bottom;
+        const times = records.map((record) => new Date(record.observed_at).getTime());
+        const minTime = Math.min(...times);
+        const maxTime = Math.max(...times);
+        const maxValue = Math.max(1, ...records.flatMap((record) => [Number(record.total_tasks) || 0, Number(record.matching_tasks) || 0]));
+        const x = (time, index) => maxTime === minTime
+          ? margin.left + plotWidth / 2
+          : margin.left + ((time - minTime) / (maxTime - minTime)) * plotWidth;
+        const y = (value) => margin.top + plotHeight - (Number(value) / maxValue) * plotHeight;
+
+        for (let tick = 0; tick <= 4; tick += 1) {
+          const value = Math.round((maxValue * tick) / 4);
+          const tickY = y(value);
+          addSvg("line", { x1: margin.left, x2: width - margin.right, y1: tickY, y2: tickY, stroke: "#d9e0e8", "stroke-width": 1 });
+          addSvg("text", { x: margin.left - 8, y: tickY + 4, "text-anchor": "end", fill: "#697384", "font-size": 11 }, value);
+        }
+
+        const labelIndexes = [...new Set([0, Math.floor((records.length - 1) / 3), Math.floor(((records.length - 1) * 2) / 3), records.length - 1])];
+        labelIndexes.forEach((index) => {
+          const time = new Date(records[index].observed_at);
+          const label = time.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+          addSvg("text", { x: x(times[index], index), y: height - 14, "text-anchor": index === 0 ? "start" : (index === records.length - 1 ? "end" : "middle"), fill: "#697384", "font-size": 11 }, label);
+        });
+
+        const series = [
+          { key: "total_tasks", color: "#0f766e", label: "All unclaimed" },
+          { key: "matching_tasks", color: "#b45309", label: "Eligible" },
+        ];
+        series.forEach((item) => {
+          const points = records.map((record, index) => `${x(times[index], index)},${y(record[item.key])}`).join(" ");
+          addSvg("polyline", { points, fill: "none", stroke: item.color, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" });
+          records.forEach((record, index) => {
+            const circle = addSvg("circle", { cx: x(times[index], index), cy: y(record[item.key]), r: 4, fill: "#ffffff", stroke: item.color, "stroke-width": 2 });
+            const title = document.createElementNS(svgNs, "title");
+            title.textContent = `${item.label}: ${record[item.key]} at ${new Date(record.observed_at).toLocaleString()}`;
+            circle.appendChild(title);
+          });
+        });
+
+        records.slice(-10).reverse().forEach((record) => {
+          const row = document.createElement("tr");
+          const total = Number(record.total_tasks) || 0;
+          const matching = Number(record.matching_tasks) || 0;
+          const values = [
+            new Date(record.observed_at).toLocaleString(),
+            total,
+            matching,
+            total ? `${((matching / total) * 100).toFixed(1)}%` : "0.0%",
+          ];
+          values.forEach((value) => {
+            const cell = document.createElement("td");
+            cell.textContent = String(value);
+            row.appendChild(cell);
+          });
+          body.appendChild(row);
+        });
       }
 
       function renderCampaigns(campaigns, selectedId) {
@@ -1933,6 +2230,49 @@
           body: JSON.stringify(configFromForm()),
         });
         renderBatchRegexTest(result);
+        if (result.credential_account) {
+          setMessage(`Credential verified: ${result.credential_account.label || "Feather account"}`);
+        }
+        await refresh();
+      }
+
+      function renderCredentialAccount(credential, running) {
+        const account = credential || {};
+        const verified = Boolean(account.label || account.email || account.display_name || account.user_id);
+        const credentialLabel = account.label || (running ? "Checking credential..." : "Not verified");
+        setText(
+          "credentialAccountLabel",
+          running ? "Active credential" : (verified ? "Verified credential" : "Credential account"),
+        );
+        setText("credentialAccount", credentialLabel);
+        $("credentialAccountPill").classList.toggle("verified", verified);
+        $("credentialAccountPill").title = [
+          `Credential account: ${credentialLabel}`,
+          account.display_name && account.display_name !== credentialLabel ? account.display_name : "",
+          account.user_id ? `Feather user ID: ${account.user_id}` : "",
+        ].filter(Boolean).join("\n");
+        $("verifyCredential").disabled = Boolean(running);
+      }
+
+      async function verifyCredential() {
+        const button = $("verifyCredential");
+        button.disabled = true;
+        button.textContent = "Verifying...";
+        setText("credentialAccountLabel", "Credential account");
+        setText("credentialAccount", "Verifying...");
+        setMessage("Verifying Feather credential...");
+        try {
+          const result = await api("/api/verify-credential", {
+            method: "POST",
+            body: JSON.stringify(configFromForm()),
+          });
+          renderCredentialAccount(result.credential_account, false);
+          setMessage(`Credential verified: ${result.credential_account?.label || "Feather account"}`);
+          await refresh();
+        } finally {
+          button.textContent = "Verify";
+          button.disabled = Boolean(latest?.running);
+        }
       }
 
       async function refresh() {
@@ -1952,27 +2292,18 @@
         setText("running", running ? `running (${latest.worker_id || "worker"})` : state);
         setText("state", state);
         setText("phase", running || state === "stopped_inactive" || state === "stopping_inactive" ? phase : "-");
-        setText("unclaimed", status.unclaimed_count);
+        setText("unclaimed", status.total_unclaimed_count ?? status.unclaimed_count);
         setText("lastPoll", status.last_poll ? `last poll ${status.last_poll}` : "-");
+        setText("eligible", status.matching_count);
+        setText("eligibleNote", status.history_sample_complete === false ? "latest poll incomplete" : "current filters");
         setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
         setText("batchMatches", status.active_batch_matches);
         setText("batchRegexView", status.batch_regex || $("batchRegex").value || "-");
         setText("mode", `${modeText(status)} / ${status.review_mode_name || currentModeConfig()?.name || $("reviewMode").value}`);
         setText("updated", ageText(status.updated_at));
         setText("server", latest.server_pid ? `server ${latest.server_pid}` : "-");
-        const credential = status.credential_account || {};
-        const credentialLabel = credential.label || (running ? "Checking credential..." : "Not verified");
-        setText(
-          "credentialAccountLabel",
-          running ? "Active credential" : (status.credential_account ? "Last credential" : "Credential account"),
-        );
-        setText("credentialAccount", credentialLabel);
-        $("credentialAccountPill").classList.toggle("verified", Boolean(running && status.credential_account));
-        $("credentialAccountPill").title = [
-          `Credential account: ${credentialLabel}`,
-          credential.display_name && credential.display_name !== credentialLabel ? credential.display_name : "",
-          credential.user_id ? `Feather user ID: ${credential.user_id}` : "",
-        ].filter(Boolean).join("\n");
+        const credential = running ? status.credential_account : (latest.credential_account || status.credential_account);
+        renderCredentialAccount(credential, running);
         setText("curlSaved", latest.curl_saved ? "saved" : "empty");
         setText("campaignView", status.campaign_name || status.campaign_id || $("campaignId").selectedOptions[0]?.textContent);
         setText("taskId", status.task_id);
@@ -1993,6 +2324,7 @@
         $("releaseCoordination").disabled = running;
         renderSeenTasks(pollSnapshot, status);
         renderClaimResult(status, pollSnapshot);
+        renderTaskHistory(latest.task_history, status);
         await refreshReviewOutput(status);
 
         $("dot").className = `dot ${state}`;
@@ -2109,11 +2441,24 @@
       $("releaseCoordination").addEventListener("click", () => releaseCoordination().catch((error) => setMessage(error.message)));
       $("saveCurl").addEventListener("click", () => saveCurl().catch((error) => setMessage(error.message)));
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
+      $("verifyCredential").addEventListener("click", () => verifyCredential().catch((error) => setMessage(error.message)));
       $("testBatchRegex").addEventListener("click", () => testBatchRegex().catch((error) => renderBatchRegexTest(null, error.message)));
       $("curlText").addEventListener("input", currentCurlValidation);
-      $("batchRegex").addEventListener("input", () => renderBatchRegexTest(null));
-      $("campaignId").addEventListener("change", currentCurlValidation);
-      $("customCampaignId").addEventListener("input", currentCurlValidation);
+      $("batchRegex").addEventListener("input", () => {
+        renderBatchRegexTest(null);
+        renderTaskHistory(latest?.task_history, latest?.status || {}, true);
+      });
+      $("tagCountMin").addEventListener("input", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
+      $("tagCountMax").addEventListener("input", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
+      $("campaignId").addEventListener("change", () => {
+        currentCurlValidation();
+        renderTaskHistory(latest?.task_history, latest?.status || {}, true);
+      });
+      $("customCampaignId").addEventListener("input", () => {
+        currentCurlValidation();
+        renderTaskHistory(latest?.task_history, latest?.status || {}, true);
+      });
+      $("historyRange").addEventListener("change", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
       $("reviewMode").addEventListener("change", applyReviewModeDefaults);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {

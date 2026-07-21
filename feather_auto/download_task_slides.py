@@ -78,6 +78,11 @@ def header_value(text: str, header_name: str) -> str | None:
     return None
 
 
+def cookie_value_from_curl(text: str) -> str | None:
+    """Read cookies from the common browser Copy-as-cURL formats."""
+    return option_value(text, "-b") or option_value(text, "--cookie") or header_value(text, "cookie")
+
+
 def build_headers(cookie: str, campaign_id: str, referer: str, task_id: str | None = None, task_kind: str | None = None) -> dict[str, str]:
     headers = {
         "accept": "*/*",
@@ -206,7 +211,7 @@ def chrome_like_headers(
 
 def load_cookie(curl_file: Path) -> str:
     curl_text = curl_file.read_text(encoding="utf-8")
-    cookie = option_value(curl_text, "-b")
+    cookie = cookie_value_from_curl(curl_text)
     if not cookie:
         raise SystemExit(f"No Feather cookie found in {curl_file}.")
     return cookie
@@ -391,7 +396,7 @@ def fetch_conversation_widget(
         layout_key=layout_key,
         keep_read_auth_token=keep_read_auth_token,
     )
-    cookie = option_value(curl_text, "-b")
+    cookie = cookie_value_from_curl(curl_text)
     if not cookie:
         raise SystemExit(f"No Feather cookie found in {graphql_curl_file}.")
     campaign_id = load_campaign_id(graphql_curl_file)

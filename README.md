@@ -78,6 +78,16 @@ Or open a new PowerShell and run:
 feather
 ```
 
+To fetch the latest changes and restart the dashboard, run:
+
+```powershell
+feather restart
+```
+
+The restart command always fetches the configured Git upstream. When the local
+branch is only behind and the worktree is clean, it fast-forwards to the latest
+commit before restarting. It preserves local changes and divergent branches.
+
 If you do not want setup to edit your PowerShell profile or start the dashboard:
 
 ```powershell
@@ -118,10 +128,12 @@ The direct PowerShell equivalent is `feather` after setup, or
 `python -m feather_auto.dashboard_server --port 8000` from an activated
 environment.
 
-On startup, the dashboard checks the configured Git upstream for new commits. If
-the local branch is behind and the worktree is clean, it pulls the latest commit
-with `git pull --ff-only` and restarts itself before serving the page. If local
-changes are present, it skips the pull and starts with the current files.
+On direct Python startup, the dashboard checks the configured Git upstream for
+new commits. If the local branch is behind and the worktree is clean, it pulls
+the latest commit with `git pull --ff-only` and restarts itself before serving
+the page. If local changes are present, it skips the pull and starts with the
+current files. The `feather restart` command performs this update check in the
+launcher before replacing the running dashboard.
 
 7. Open:
 

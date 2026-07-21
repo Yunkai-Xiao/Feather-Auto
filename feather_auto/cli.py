@@ -229,6 +229,11 @@ def header_value(text: str, header_name: str) -> str | None:
     return None
 
 
+def cookie_value_from_curl(text: str) -> str | None:
+    """Read cookies from the common browser Copy-as-cURL formats."""
+    return option_value(text, "-b") or option_value(text, "--cookie") or header_value(text, "cookie")
+
+
 def default_search_payload(campaign_id: str, page_size: int) -> dict[str, Any]:
     return {
         "page": 0,
@@ -249,7 +254,7 @@ def default_search_payload(campaign_id: str, page_size: int) -> dict[str, Any]:
 
 
 def request_parts_from_curl(curl_text: str, campaign_id: str, page_size: int) -> tuple[str, dict[str, Any]]:
-    cookie = option_value(curl_text, "-b") or os.environ.get("FEATHER_COOKIE")
+    cookie = cookie_value_from_curl(curl_text) or os.environ.get("FEATHER_COOKIE")
     if not cookie:
         raise ValueError("No Feather cookie found. Provide --curl-file or FEATHER_COOKIE.")
 
@@ -715,16 +720,27 @@ def campaign_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def search_page_count(data: dict[str, Any], payload: dict[str, Any]) -> int | None:
     """Return the server-reported page count, or None when it cannot be trusted."""
+    count = search_total_count(data)
+    pagination = data.get("pagination") if isinstance(data, dict) else None
+    pagination = pagination if isinstance(pagination, dict) else {}
+    try:
+        page_size = int(pagination.get("page_size", payload.get("page_size")))
+    except (TypeError, ValueError):
+        return None
+    if count is None or page_size < 1:
+        return None
+    return (count + page_size - 1) // page_size
+
+
+def search_total_count(data: dict[str, Any]) -> int | None:
+    """Return a non-negative server-reported task count when available."""
     pagination = data.get("pagination") if isinstance(data, dict) else None
     pagination = pagination if isinstance(pagination, dict) else {}
     try:
         count = int(pagination["count"])
-        page_size = int(pagination.get("page_size", payload.get("page_size")))
     except (KeyError, TypeError, ValueError):
         return None
-    if count < 0 or page_size < 1:
-        return None
-    return (count + page_size - 1) // page_size
+    return count if count >= 0 else None
 
 
 def claim_payload(task_id: str) -> list[dict[str, Any]]:
@@ -1275,12 +1291,13 @@ def _run_monitor_impl(
         tasks: list[dict[str, Any]] = []
         response_by_task_id: dict[str, dict[str, Any]] = {}
         seen_poll_task_ids: set[str] = set()
+        total_unclaimed_count: int | None = None
         page_searches = 0
         search_mode = "batch"
         searches_to_run = search_payloads
         campaign_pages: list[dict[str, Any]] | None = None
 
-        if config.batch_name or batch_regex:
+        if config.batch_id or config.batch_name or batch_regex:
             probe_payload = campaign_search_payload(payload)
             try:
                 probe_data = poll_once(search_headers, probe_payload, session=session)
@@ -1296,6 +1313,7 @@ def _run_monitor_impl(
                     flush=True,
                 )
             else:
+                total_unclaimed_count = search_total_count(probe_data)
                 campaign_page_total = search_page_count(probe_data, probe_payload)
                 if campaign_page_total is not None and campaign_page_total < CAMPAIGN_SEARCH_PAGE_THRESHOLD:
                     try:
@@ -1391,6 +1409,22 @@ def _run_monitor_impl(
                         seen_poll_task_ids.add(task_id)
                         response_by_task_id[task_id] = data
                     tasks.append(task)
+        if not (config.batch_id or config.batch_name or batch_regex):
+            total_unclaimed_count = len(tasks)
+
+        matching_count = sum(
+            1
+            for task in tasks
+            if task_matches_filters(
+                task,
+                config.batch_id,
+                config.batch_name,
+                batch_regex,
+                allowed_batch_refs,
+                config.tag_count_min,
+                config.tag_count_max,
+            )
+        )
         poll_error_fields: dict[str, Any] = {}
         if poll_errors:
             poll_error_fields = {
@@ -1407,7 +1441,9 @@ def _run_monitor_impl(
             poll_observation_emitted = True
             emit(
                 f"[{now}] tasks={len(tasks)} batch_searches={len(searches_to_run)} "
-                f"page_searches={page_searches} search_mode={search_mode}",
+                f"page_searches={page_searches} search_mode={search_mode} "
+                f"total_unclaimed={total_unclaimed_count if total_unclaimed_count is not None else '?'} "
+                f"matching={matching_count}",
                 flush=True,
             )
             if tasks:
@@ -1422,6 +1458,9 @@ def _run_monitor_impl(
                 active_batch_matches=len(allowed_batch_refs),
                 server_batch_filters=current_batch_search_ids,
                 unclaimed_count=len(tasks),
+                total_unclaimed_count=total_unclaimed_count,
+                matching_count=matching_count,
+                history_sample_complete=not poll_errors and total_unclaimed_count is not None,
                 search_pages=page_searches,
                 last_poll=now,
                 **poll_error_fields,
@@ -1619,6 +1658,9 @@ def _run_monitor_impl(
             active_batch_matches=len(allowed_batch_refs),
             server_batch_filters=current_batch_search_ids,
             unclaimed_count=len(tasks),
+            total_unclaimed_count=total_unclaimed_count,
+            matching_count=matching_count,
+            history_sample_complete=not poll_errors and total_unclaimed_count is not None,
             search_pages=page_searches,
             next_sleep_seconds=round(delay, 2),
             last_poll=now,

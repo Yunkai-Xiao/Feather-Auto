@@ -24,6 +24,9 @@ from .cli import (
     batch_ref_summary,
     build_headers,
     compile_batch_regex,
+    create_http_session,
+    credential_account_summary,
+    current_user,
     effective_batch_regex,
     request_parts_from_curl,
     run_monitor,
@@ -31,6 +34,7 @@ from .cli import (
 )
 from .coordination import default_owner_label, release_saved_lease
 from .review_task_slides import run_review_pipeline
+from .task_history import TaskHistoryStore
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +44,7 @@ REDIRECT_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_task_or_stagecraft_redir
 CONVERSATION_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_conversation_widget.curl.txt"
 LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
+TASK_HISTORY_FILE = OUTPUTS / "task_count_history.json"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 COORDINATION_STATE_FILE = OUTPUTS / "coordination_lease.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
@@ -376,6 +381,7 @@ class MonitorController:
         self._last_heartbeat_at: float | None = None
         self._allow_background_run = False
         self._stop_reason = ""
+        self._verified_credential_account: dict[str, str | None] | None = None
 
     def _running_unlocked(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -435,8 +441,24 @@ class MonitorController:
                 handle.write(text)
 
     def _update_status(self, payload: dict[str, Any]) -> None:
+        status = dict(payload)
+        try:
+            TASK_HISTORY.record_status(status)
+        except OSError as exc:
+            status["history_error"] = str(exc)[:300]
+            self._emit(f"HISTORY_WRITE_FAILED {exc}", flush=True)
         with self._lock:
-            status = dict(payload)
+            for key in (
+                "total_unclaimed_count",
+                "matching_count",
+                "unclaimed_count",
+                "last_poll",
+                "search_pages",
+            ):
+                if key not in status and key in self._status:
+                    status[key] = self._status[key]
+            if status.get("credential_account"):
+                self._verified_credential_account = dict(status["credential_account"])
             if status.get("state") == "stopped" and self._stop_reason == "inactive_session":
                 status = {
                     **status,
@@ -445,6 +467,20 @@ class MonitorController:
                     "stop_reason": INACTIVE_SESSION_REASON,
                 }
             self._status = {**status, **self._session_fields_unlocked()}
+
+    def remember_credential_account(self, account: dict[str, str | None]) -> None:
+        with self._lock:
+            self._verified_credential_account = dict(account)
+
+    def clear_credential_account(self) -> None:
+        with self._lock:
+            self._verified_credential_account = None
+            if not self._running_unlocked() and "credential_account" in self._status:
+                self._status = {
+                    key: value
+                    for key, value in self._status.items()
+                    if key != "credential_account"
+                }
 
     def _review_claimed_task(self, task_id: str) -> None:
         review_dir = REVIEW_OUTPUT_ROOT / task_id
@@ -543,6 +579,7 @@ class MonitorController:
         curl_text = str(config.get("curlText") or "").strip()
         if curl_text:
             CURL_FILE.write_text(curl_text, encoding="utf-8")
+            self.clear_credential_account()
         if not CURL_FILE.exists():
             raise ValueError("Paste a Feather Copy-as-cURL before starting.")
 
@@ -697,6 +734,11 @@ class MonitorController:
             running = self._running_unlocked()
             worker_id = self._thread.ident if self._thread else None
             status = {**self._status, **self._session_fields_unlocked()}
+            verified_credential_account = (
+                dict(self._verified_credential_account)
+                if self._verified_credential_account
+                else None
+            )
             last_error = self._last_error
             if status.get("campaign_id") and not status.get("campaign_name"):
                 status = {**status, "campaign_name": campaign_name(str(status["campaign_id"]))}
@@ -709,10 +751,12 @@ class MonitorController:
             "server_pid": os.getpid(),
             "worker_id": worker_id if running else None,
             "curl_saved": CURL_FILE.exists(),
+            "credential_account": verified_credential_account,
             "campaigns": CAMPAIGNS,
             "review_modes": REVIEW_MODES,
             "coordination": coordination_settings(),
             "runtime": dashboard_runtime(),
+            "task_history": TASK_HISTORY.snapshot(),
             "status": status,
             "log_tail": tail(LOG_FILE),
             "stderr_tail": last_error,
@@ -720,6 +764,7 @@ class MonitorController:
                 "curl": str(CURL_FILE),
                 "log": str(LOG_FILE),
                 "status": str(STATUS_FILE),
+                "task_history": str(TASK_HISTORY_FILE),
                 "save": str(SAVE_FILE),
                 "redirect_graphql_curl": str(REDIRECT_GRAPHQL_CURL_FILE),
                 "conversation_graphql_curl": str(CONVERSATION_GRAPHQL_CURL_FILE),
@@ -728,6 +773,7 @@ class MonitorController:
         }
 
 
+TASK_HISTORY = TaskHistoryStore(TASK_HISTORY_FILE)
 MONITOR = MonitorController()
 
 
@@ -747,6 +793,44 @@ def release_coordination() -> dict[str, Any]:
     return MONITOR.release_coordination()
 
 
+def credential_request_context(config: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    _review_mode, _mode_config, campaign_id = dashboard_monitor_settings(config)
+    curl_text = dashboard_curl_text(config)
+    if not curl_text:
+        raise ValueError("Paste or save a Feather Copy-as-cURL before verifying the credential.")
+
+    cookie, _payload = request_parts_from_curl(curl_text, campaign_id, page_size=20)
+    campaign_url = f"{BASE_URL}/campaigns/{campaign_id}?tab=tasks&tasks-tab=unclaimed"
+    return campaign_id, build_headers(cookie, campaign_id, campaign_url)
+
+
+def verified_credential_account(
+    headers: dict[str, str],
+    *,
+    session: Any = None,
+) -> dict[str, str | None]:
+    account = credential_account_summary(current_user(headers, session=session))
+    if not any(account.get(field) for field in ("email", "display_name", "user_id")):
+        raise RuntimeError("Feather whoami did not return an identifiable credential account.")
+    MONITOR.remember_credential_account(account)
+    return account
+
+
+def verify_credential(config: dict[str, Any]) -> dict[str, Any]:
+    campaign_id, headers = credential_request_context(config)
+    session = create_http_session()
+    try:
+        account = verified_credential_account(headers, session=session)
+    finally:
+        session.close()
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name(campaign_id),
+        "credential_account": account,
+    }
+
+
 def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
     _review_mode, mode_config, campaign_id = dashboard_monitor_settings(config)
     batch_regex = dashboard_batch_regex(config, mode_config)
@@ -754,14 +838,13 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
     if not pattern:
         raise ValueError("Enter a batch regex before testing.")
 
-    curl_text = dashboard_curl_text(config)
-    if not curl_text:
-        raise ValueError("Paste or save a Feather Copy-as-cURL before testing batch regex.")
-
-    cookie, _payload = request_parts_from_curl(curl_text, campaign_id, page_size=20)
-    campaign_url = f"{BASE_URL}/campaigns/{campaign_id}?tab=tasks&tasks-tab=unclaimed"
-    headers = build_headers(cookie, campaign_id, campaign_url)
-    refs = active_batch_refs(headers, campaign_id)
+    context_campaign_id, headers = credential_request_context(config)
+    session = create_http_session()
+    try:
+        account = verified_credential_account(headers, session=session)
+        refs = active_batch_refs(headers, context_campaign_id, session=session)
+    finally:
+        session.close()
     matches = [batch_ref_summary(ref) for ref in refs if pattern.search(str(ref.get("name") or ""))]
     return {
         "ok": True,
@@ -771,6 +854,7 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
         "active_count": len(refs),
         "match_count": len(matches),
         "matches": matches,
+        "credential_account": account,
     }
 
 
@@ -821,6 +905,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = read_json_body(self)
                 write_json(self, 200, test_batch_regex(payload))
                 return
+            if self.path == "/api/verify-credential":
+                payload = read_json_body(self)
+                write_json(self, 200, verify_credential(payload))
+                return
             if self.path == "/api/save-curl":
                 payload = read_json_body(self)
                 curl_text = str(payload.get("curlText") or "").strip()
@@ -829,6 +917,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
                 OUTPUTS.mkdir(parents=True, exist_ok=True)
                 CURL_FILE.write_text(curl_text, encoding="utf-8")
+                MONITOR.clear_credential_account()
                 write_json(self, 200, {"ok": True, "curl_saved": True})
                 return
             if self.path == "/api/save-graphql-curls":

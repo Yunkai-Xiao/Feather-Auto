@@ -1,4 +1,7 @@
 param(
+    [Parameter(Position = 0)]
+    [ValidateSet("start", "restart")]
+    [string]$Command = "start",
     [switch]$NoOpen,
     [switch]$ForceRestart,
     [int]$Port = 8000
@@ -11,6 +14,131 @@ $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $url = "http://127.0.0.1:$Port/dashboard.html"
 $stateUrl = "http://127.0.0.1:$Port/api/state"
+$restartRequested = $ForceRestart -or $Command -eq "restart"
+
+function Find-FeatherGit {
+    $command = Get-Command git.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $candidatePaths = @()
+    if ($env:ProgramFiles) {
+        $candidatePaths += Join-Path $env:ProgramFiles "Git\cmd\git.exe"
+        $candidatePaths += Join-Path $env:ProgramFiles "Git\bin\git.exe"
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $candidatePaths += Join-Path ${env:ProgramFiles(x86)} "Git\cmd\git.exe"
+    }
+    if ($env:LocalAppData) {
+        $candidatePaths += Join-Path $env:LocalAppData "Programs\Git\cmd\git.exe"
+    }
+    if ($env:USERPROFILE) {
+        $candidatePaths += Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe"
+    }
+
+    foreach ($candidatePath in $candidatePaths) {
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidatePath).Path
+        }
+    }
+
+    if ($env:LocalAppData) {
+        $githubDesktopRoot = Join-Path $env:LocalAppData "GitHubDesktop"
+        if (Test-Path -LiteralPath $githubDesktopRoot -PathType Container) {
+            $githubDesktopGit = Get-ChildItem -LiteralPath $githubDesktopRoot -Directory -Filter "app-*" -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName "resources\app\git\cmd\git.exe" } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+            if ($githubDesktopGit) {
+                return $githubDesktopGit
+            }
+        }
+    }
+
+    return $null
+}
+
+$gitExecutable = Find-FeatherGit
+
+function Invoke-FeatherGit {
+    param([string[]]$Arguments)
+
+    if (-not $gitExecutable) {
+        return [pscustomobject]@{
+            ExitCode = 127
+            Output = "git executable not found; install Git for Windows or add git.exe to PATH"
+        }
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $gitExecutable -C $repoRoot @Arguments 2>&1
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output = (($output | Out-String).Trim())
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Update-FeatherBeforeRestart {
+    $insideWorkTree = Invoke-FeatherGit -Arguments @("rev-parse", "--is-inside-work-tree")
+    if ($insideWorkTree.ExitCode -ne 0 -or $insideWorkTree.Output -ne "true") {
+        Write-Warning "Restart update skipped: $($insideWorkTree.Output)"
+        return
+    }
+
+    $upstream = Invoke-FeatherGit -Arguments @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if ($upstream.ExitCode -ne 0) {
+        Write-Warning "Restart update skipped because no Git upstream is configured."
+        return
+    }
+
+    Write-Host "Fetching latest Feather changes..." -ForegroundColor Cyan
+    $fetch = Invoke-FeatherGit -Arguments @("fetch", "--quiet", "--prune")
+    if ($fetch.ExitCode -ne 0) {
+        Write-Warning "Restart update fetch failed: $($fetch.Output)"
+        return
+    }
+
+    $head = Invoke-FeatherGit -Arguments @("rev-parse", "HEAD")
+    $remote = Invoke-FeatherGit -Arguments @("rev-parse", "@{u}")
+    $base = Invoke-FeatherGit -Arguments @("merge-base", "HEAD", "@{u}")
+    if ($head.ExitCode -ne 0 -or $remote.ExitCode -ne 0 -or $base.ExitCode -ne 0) {
+        Write-Warning "Fetched latest changes, but could not compare the local branch with $($upstream.Output)."
+        return
+    }
+    if ($head.Output -eq $remote.Output) {
+        Write-Host "Feather is already up to date." -ForegroundColor Green
+        return
+    }
+
+    $dirty = Invoke-FeatherGit -Arguments @("status", "--porcelain")
+    if ($dirty.ExitCode -ne 0) {
+        Write-Warning "Restart update could not inspect the worktree: $($dirty.Output)"
+        return
+    }
+    if ($dirty.Output) {
+        Write-Warning "Fetched latest changes, but did not update because local changes are present."
+        return
+    }
+
+    if ($base.Output -ne $head.Output) {
+        Write-Warning "Fetched latest changes, but did not update because the local branch has diverged from $($upstream.Output)."
+        return
+    }
+
+    $merge = Invoke-FeatherGit -Arguments @("merge", "--ff-only", "--quiet", "@{u}")
+    if ($merge.ExitCode -ne 0) {
+        Write-Warning "Restart update failed: $($merge.Output)"
+        return
+    }
+    Write-Host "Updated Feather to the latest $($upstream.Output)." -ForegroundColor Green
+}
 
 function Test-FeatherPort {
     $client = New-Object System.Net.Sockets.TcpClient
@@ -114,7 +242,11 @@ function Stop-FeatherPortProcesses {
 $portOpen = Test-FeatherPort
 $dashboardReady = Test-Dashboard
 
-if ($ForceRestart -and $portOpen) {
+if ($restartRequested) {
+    Update-FeatherBeforeRestart
+}
+
+if ($restartRequested -and $portOpen) {
     Stop-FeatherPortProcesses
     Start-Sleep -Milliseconds 800
     $portOpen = Test-FeatherPort
