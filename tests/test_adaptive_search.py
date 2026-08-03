@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import ANY, call, patch
+from unittest.mock import ANY, patch
 
 from feather_auto.cli import MonitorConfig, run_monitor
 
@@ -73,7 +73,7 @@ class AdaptiveSearchTests(unittest.TestCase):
     @patch("feather_auto.cli.request_parts_from_curl")
     @patch("feather_auto.cli.read_curl_text", return_value="curl")
     @patch("feather_auto.cli.current_user", return_value={"id": "user-1", "email": "user@example.com"})
-    def test_four_page_campaign_uses_complete_per_batch_scans(
+    def test_four_page_campaign_takes_complete_distribution_snapshot(
         self,
         _current_user,
         _read_curl,
@@ -84,23 +84,42 @@ class AdaptiveSearchTests(unittest.TestCase):
     ):
         base_payload = {"page": 0, "page_size": 20, "task_batch_id": "copied"}
         request_parts.return_value = ("cookie", base_payload)
-        _refs, searches = self.batch_searches()
         resolve_searches.return_value = self.batch_searches()
-        poll_once.return_value = {
-            "tasks": [],
+        campaign_tasks = [
+            {
+                "id": f"task-{index}",
+                "task_batch_name": "target a",
+                "tags": [],
+            }
+            for index in range(61)
+        ]
+        probe = {
+            "tasks": campaign_tasks,
             "pagination": {"page": 0, "page_size": 20, "count": 61},
         }
-        poll_all_pages.return_value = []
-
-        self.assertEqual(0, run_monitor(self.config(), emit=lambda *_args, **_kwargs: None))
+        poll_once.return_value = probe
+        poll_all_pages.return_value = [probe]
+        statuses = []
 
         self.assertEqual(
-            [
-                call(ANY, searches[0][1], session=ANY),
-                call(ANY, searches[1][1], session=ANY),
-            ],
-            poll_all_pages.call_args_list,
+            0,
+            run_monitor(
+                self.config(),
+                emit=lambda *_args, **_kwargs: None,
+                status_callback=statuses.append,
+            ),
         )
+
+        campaign_payload = {"page": 0, "page_size": 20, "include_tags": True}
+        poll_all_pages.assert_called_once_with(
+            ANY,
+            campaign_payload,
+            first_page=probe,
+            session=ANY,
+        )
+        sample = next(status for status in statuses if status.get("task_distributions"))
+        self.assertTrue(sample["task_distributions"]["complete"])
+        self.assertEqual(len(sample["task_observations"]), 61)
 
 
 if __name__ == "__main__":

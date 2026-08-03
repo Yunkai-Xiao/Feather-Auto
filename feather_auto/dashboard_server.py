@@ -5,6 +5,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -33,8 +34,9 @@ from .cli import (
     tag_count_filter_payload,
 )
 from .coordination import default_owner_label, release_saved_lease
+from .insightful import DEFAULT_TASK_PREFIX
 from .review_task_slides import run_review_pipeline
-from .task_history import TaskHistoryStore
+from .task_history import TaskHistoryStore, TaskObservationStore
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +47,7 @@ CONVERSATION_GRAPHQL_CURL_FILE = OUTPUTS / "current_feather_conversation_widget.
 LOG_FILE = OUTPUTS / "raw_creation_claim_monitor.log"
 STATUS_FILE = OUTPUTS / "raw_creation_claim_status.json"
 TASK_HISTORY_FILE = OUTPUTS / "task_count_history.json"
+TASK_OBSERVATION_HISTORY_FILE = OUTPUTS / "task_observation_history.sqlite3"
 SAVE_FILE = OUTPUTS / "last_claimed_raw_creation_task.json"
 COORDINATION_STATE_FILE = OUTPUTS / "coordination_lease.json"
 DASHBOARD_PID_FILE = OUTPUTS / "dashboard_server.pid"
@@ -447,13 +450,26 @@ class MonitorController:
         except OSError as exc:
             status["history_error"] = str(exc)[:300]
             self._emit(f"HISTORY_WRITE_FAILED {exc}", flush=True)
+        try:
+            TASK_OBSERVATIONS.record_status(status)
+        except (OSError, sqlite3.Error) as exc:
+            status["observation_history_error"] = str(exc)[:300]
+            self._emit(f"OBSERVATION_HISTORY_WRITE_FAILED {exc}", flush=True)
+        status.pop("task_observations", None)
         with self._lock:
             for key in (
                 "total_unclaimed_count",
                 "matching_count",
+                "previously_claimed_count",
+                "claim_history_checked_count",
+                "claim_history_sample_complete",
                 "unclaimed_count",
+                "task_distributions",
                 "last_poll",
                 "search_pages",
+                "auto_review",
+                "start_insightful",
+                "insightful_task_prefix",
             ):
                 if key not in status and key in self._status:
                     status[key] = self._status[key]
@@ -590,11 +606,19 @@ class MonitorController:
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
         auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
+        start_insightful = bool(config.get("startInsightful", True))
+        insightful_task_prefix = str(
+            config.get("insightfulTaskPrefix")
+            or os.environ.get("INSIGHTFUL_TASK_PREFIX")
+            or DEFAULT_TASK_PREFIX
+        ).strip()
         allow_background_run = bool(config.get("allowBackgroundRun", False))
         if interval_min < 1:
             raise ValueError("Interval min must be >= 1 second.")
         if interval_max < interval_min:
             raise ValueError("Interval max must be >= interval min.")
+        if start_insightful and not insightful_task_prefix:
+            raise ValueError("Insightful task prefix is required when automatic timer start is enabled.")
 
         monitor_config = MonitorConfig(
             campaign_id=campaign_id,
@@ -608,6 +632,8 @@ class MonitorController:
             open_task=bool(config.get("openTask", True)),
             tag_count_min=tag_count_min,
             tag_count_max=tag_count_max,
+            start_insightful=start_insightful,
+            insightful_task_prefix=insightful_task_prefix,
             coordination_url=os.environ.get("FEATHER_COORDINATION_URL"),
             coordination_token=os.environ.get("FEATHER_COORDINATION_TOKEN"),
             coordination_owner=os.environ.get("FEATHER_COORDINATION_OWNER"),
@@ -660,6 +686,8 @@ class MonitorController:
                 "batch_regex": batch_regex,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
                 "auto_review": auto_review,
+                "start_insightful": start_insightful,
+                "insightful_task_prefix": insightful_task_prefix,
                 "allow_background_run": allow_background_run,
                 **self._session_fields_unlocked(heartbeat_at),
             }
@@ -765,6 +793,7 @@ class MonitorController:
                 "log": str(LOG_FILE),
                 "status": str(STATUS_FILE),
                 "task_history": str(TASK_HISTORY_FILE),
+                "task_observation_history": str(TASK_OBSERVATION_HISTORY_FILE),
                 "save": str(SAVE_FILE),
                 "redirect_graphql_curl": str(REDIRECT_GRAPHQL_CURL_FILE),
                 "conversation_graphql_curl": str(CONVERSATION_GRAPHQL_CURL_FILE),
@@ -774,6 +803,7 @@ class MonitorController:
 
 
 TASK_HISTORY = TaskHistoryStore(TASK_HISTORY_FILE)
+TASK_OBSERVATIONS = TaskObservationStore(TASK_OBSERVATION_HISTORY_FILE)
 MONITOR = MonitorController()
 
 
@@ -862,6 +892,35 @@ def dashboard_state() -> dict[str, Any]:
     return MONITOR.state()
 
 
+def distribution_history(query: dict[str, list[str]]) -> dict[str, Any]:
+    status = dashboard_state().get("status") or {}
+    campaign_id = str((query.get("campaign_id") or [status.get("campaign_id") or ""])[0]).strip()
+    if not campaign_id:
+        raise ValueError("campaign_id is required.")
+    batch_regex = str((query.get("batch_regex") or [status.get("batch_regex") or ""])[0])
+    tag_filter = status.get("tag_count_filter") if isinstance(status.get("tag_count_filter"), dict) else {}
+    raw_tag_min = (query.get("tag_min") or [tag_filter.get("min")])[0]
+    raw_tag_max = (query.get("tag_max") or [tag_filter.get("max")])[0]
+    tag_min = optional_int(raw_tag_min, "Tag count min")
+    tag_max = optional_int(raw_tag_max, "Tag count max")
+    tag_task_type = str((query.get("tag_task_type") or [""])[0]).strip() or None
+    raw_range = str((query.get("minutes") or ["30"])[0]).strip().lower()
+    range_minutes = None if raw_range == "all" else int(raw_range)
+    if range_minutes is not None and range_minutes < 1:
+        raise ValueError("minutes must be >= 1 or 'all'.")
+    return {
+        "ok": True,
+        **TASK_OBSERVATIONS.distribution(
+            campaign_id=campaign_id,
+            batch_regex=batch_regex,
+            tag_count_min=tag_min,
+            tag_count_max=tag_max,
+            tag_task_type=tag_task_type,
+            range_minutes=range_minutes,
+        ),
+    }
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def translate_path(self, path: str) -> str:
         request_path = urlsplit(path).path
@@ -874,6 +933,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path.startswith("/api/state"):
             write_json(self, 200, dashboard_state())
+            return
+        if self.path.startswith("/api/distribution-history"):
+            try:
+                write_json(
+                    self,
+                    200,
+                    distribution_history(
+                        parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                    ),
+                )
+            except Exception as exc:
+                write_json(self, 400, {"ok": False, "error": str(exc)})
             return
         if self.path.startswith("/api/review-output"):
             query = parse_qs(urlsplit(self.path).query)

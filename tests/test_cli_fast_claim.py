@@ -143,6 +143,8 @@ class ConnectionReuseAndFastClaimTests(unittest.TestCase):
             patch.object(cli, "request_parts_from_curl", return_value=("cookie", {"page": 0, "page_size": 20})),
             patch.object(cli, "current_user", return_value={"id": "user-1"}) as current_user,
             patch.object(cli, "find_current_in_progress_task", return_value=None) as in_progress_guard,
+            patch.object(cli, "fetch_task_histories", return_value={"task-1": []}) as fetch_task_histories,
+            patch.object(cli, "fetch_task_history") as fetch_task_history,
             patch.object(cli, "resolve_batch_searches", return_value=([], [(None, {"page": 0, "page_size": 20})])) as resolve_searches,
             patch.object(cli, "poll_all_pages", return_value=[response]) as poll_all_pages,
             patch.object(cli, "print_claim_result", side_effect=claim) as print_claim_result,
@@ -159,6 +161,8 @@ class ConnectionReuseAndFastClaimTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs.get("session") is session for call in in_progress_guard.call_args_list))
         self.assertIs(resolve_searches.call_args.kwargs["session"], session)
         self.assertIs(poll_all_pages.call_args.kwargs["session"], session)
+        fetch_task_histories.assert_called_once_with(ANY, ["task-1"], session=session)
+        fetch_task_history.assert_not_called()
         self.assertIs(print_claim_result.call_args.kwargs["session"], session)
         session.close.assert_called_once_with()
 

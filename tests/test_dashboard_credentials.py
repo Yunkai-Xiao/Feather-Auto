@@ -87,6 +87,37 @@ class DashboardCredentialTests(unittest.TestCase):
 
         remember.assert_not_called()
 
+    def test_distribution_history_parses_custom_range_and_blank_filter_bounds(self) -> None:
+        result_payload = {"historical": True, "unique_task_count": 3}
+        with (
+            patch.object(dashboard_server, "dashboard_state", return_value={"status": {}}),
+            patch.object(
+                dashboard_server.TASK_OBSERVATIONS,
+                "distribution",
+                return_value=result_payload,
+            ) as distribution,
+        ):
+            result = dashboard_server.distribution_history(
+                {
+                    "campaign_id": ["campaign-1"],
+                    "batch_regex": ["Aesthetic|raw"],
+                    "tag_min": [""],
+                    "tag_max": ["8"],
+                    "tag_task_type": ["Complete the Deck"],
+                    "minutes": ["60"],
+                }
+            )
+
+        self.assertEqual(result, {"ok": True, **result_payload})
+        distribution.assert_called_once_with(
+            campaign_id="campaign-1",
+            batch_regex="Aesthetic|raw",
+            tag_count_min=None,
+            tag_count_max=8,
+            tag_task_type="Complete the Deck",
+            range_minutes=60,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

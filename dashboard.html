@@ -594,7 +594,7 @@
 
       .metric-grid {
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(7, minmax(0, 1fr));
         gap: 0;
       }
 
@@ -624,6 +624,170 @@
       .metric-note {
         display: block;
         margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .distribution-body {
+        padding: 12px;
+      }
+
+      .distribution-controls,
+      .distribution-custom-range {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .distribution-controls select,
+      .distribution-controls input {
+        width: auto;
+        min-height: 30px;
+        padding: 4px 28px 4px 8px;
+        font-size: 12px;
+      }
+
+      .distribution-controls input {
+        width: 76px;
+        padding-right: 8px;
+      }
+
+      .distribution-custom-range[hidden] {
+        display: none;
+      }
+
+      .distribution-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .distribution-card {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: #fbfcfe;
+        padding: 12px;
+      }
+
+      .distribution-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .distribution-card-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .distribution-card-heading,
+      .distribution-card-filter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .distribution-card-heading {
+        flex-wrap: wrap;
+      }
+
+      .distribution-card-filter {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .distribution-card-filter select {
+        width: auto;
+        min-height: 28px;
+        padding: 3px 26px 3px 7px;
+        font-size: 11px;
+      }
+
+      .distribution-legend {
+        display: flex;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .distribution-key {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .distribution-key::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+
+      .distribution-key.eligible::before {
+        background: var(--warning);
+      }
+
+      .distribution-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .distribution-row {
+        display: grid;
+        grid-template-columns: minmax(110px, 0.8fr) minmax(120px, 1.4fr) auto;
+        align-items: center;
+        gap: 10px;
+        min-height: 28px;
+        font-size: 12px;
+      }
+
+      .distribution-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 700;
+      }
+
+      .distribution-bars {
+        display: grid;
+        gap: 3px;
+      }
+
+      .distribution-track {
+        height: 5px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e7ebf0;
+      }
+
+      .distribution-bar {
+        display: block;
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+      }
+
+      .distribution-bar.eligible {
+        background: var(--warning);
+      }
+
+      .distribution-count {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        font-weight: 750;
+        white-space: nowrap;
+      }
+
+      .distribution-empty {
         color: var(--muted);
         font-size: 12px;
       }
@@ -671,6 +835,10 @@
 
       .history-key.matching::before {
         background: var(--warning);
+      }
+
+      .history-key.previously-claimed::before {
+        background: #7c3aed;
       }
 
       .history-chart-wrap {
@@ -947,6 +1115,10 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        .distribution-grid {
+          grid-template-columns: 1fr;
+        }
+
         .metric {
           border-right: 0;
           border-bottom: 1px solid var(--border);
@@ -1062,9 +1234,15 @@
                 </div>
               </div>
 
+              <div class="field">
+                <label for="insightfulTaskPrefix">Insightful task prefix</label>
+                <input id="insightfulTaskPrefix" value="HL Grading: Writing" placeholder="HL Grading: Writing" />
+              </div>
+
               <div class="toggle-list">
                 <label class="switch"><span>Claim</span><input id="claim" type="checkbox" checked /></label>
                 <label class="switch"><span>Open task on success</span><input id="openTask" type="checkbox" checked /></label>
+                <label class="switch"><span>Start Insightful after claim</span><input id="startInsightful" type="checkbox" checked /></label>
                 <label class="switch"><span>Auto review after claim</span><input id="autoReview" type="checkbox" /></label>
                 <label class="switch"><span>Keep running in background</span><input id="allowBackgroundRun" type="checkbox" checked /></label>
               </div>
@@ -1134,6 +1312,11 @@
                 <span class="metric-note" id="eligibleNote">current filters</span>
               </div>
               <div class="metric">
+                <span class="label">Claimed before</span>
+                <span class="metric-value" id="claimedBefore">-</span>
+                <span class="metric-note" id="claimedBeforeNote">eligible tasks</span>
+              </div>
+              <div class="metric">
                 <span class="label">Next poll</span>
                 <span class="metric-value" id="nextPoll">-</span>
                 <span class="metric-note">random interval</span>
@@ -1155,7 +1338,7 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">Task history</h2>
-                <span class="small" id="historyMeta">waiting for first snapshot</span>
+                <span class="small" id="historyMeta">waiting for first summed interval</span>
               </div>
               <div class="history-controls">
                 <label for="historyRange" class="small">Range</label>
@@ -1168,26 +1351,106 @@
             </div>
             <div class="history-body">
               <div class="history-legend" aria-hidden="true">
-                <span class="history-key">All unclaimed tasks</span>
-                <span class="history-key matching">Eligible tasks</span>
+                <span class="history-key">All unclaimed task sum</span>
+                <span class="history-key matching">Eligible task sum</span>
+                <span class="history-key previously-claimed">Claimed-before eligible sum</span>
               </div>
               <div class="history-chart-wrap">
-                <svg id="historyChart" class="history-chart" viewBox="0 0 900 260" role="img" aria-label="Task counts over time"></svg>
+                <svg id="historyChart" class="history-chart" viewBox="0 0 900 260" role="img" aria-label="Summed task counts over time"></svg>
               </div>
               <div class="table-wrap">
                 <table class="history-table">
                   <thead>
                     <tr>
-                      <th>Observed</th>
-                      <th>Total</th>
-                      <th>Eligible</th>
+                      <th>Interval</th>
+                      <th>Total sum</th>
+                      <th>Eligible sum</th>
+                      <th>Claimed before sum</th>
                       <th>Eligible rate</th>
+                      <th>Claimed / eligible</th>
                     </tr>
                   </thead>
                   <tbody id="historyBody">
-                    <tr class="empty-row"><td colspan="4">Waiting for the first complete poll.</td></tr>
+                    <tr class="empty-row"><td colspan="6">Waiting for the first complete poll.</td></tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Task distributions</h2>
+                <span class="small" id="distributionMeta">waiting for the next poll</span>
+              </div>
+              <div class="distribution-controls">
+                <label for="distributionRange" class="small">Window</label>
+                <select id="distributionRange">
+                  <option value="30" selected>Last 30 minutes</option>
+                  <option value="60">Last 1 hour</option>
+                  <option value="120">Last 2 hours</option>
+                  <option value="360">Last 6 hours</option>
+                  <option value="720">Last 12 hours</option>
+                  <option value="1440">Last 24 hours</option>
+                  <option value="10080">Last 7 days</option>
+                  <option value="all">All retained data</option>
+                  <option value="custom">Custom</option>
+                </select>
+                <div class="distribution-custom-range" id="distributionCustomRange" hidden>
+                  <input id="distributionCustomValue" type="number" min="1" step="1" value="90" aria-label="Custom distribution window" />
+                  <select id="distributionCustomUnit" aria-label="Custom distribution window unit">
+                    <option value="1">minutes</option>
+                    <option value="60">hours</option>
+                    <option value="1440">days</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="distribution-body">
+              <div class="distribution-grid">
+                <div class="distribution-card">
+                  <div class="distribution-card-header">
+                    <div class="distribution-card-heading">
+                      <h3 class="distribution-card-title">Tag count</h3>
+                      <label class="distribution-card-filter" for="tagDistributionTaskType">
+                        Task type
+                        <select id="tagDistributionTaskType">
+                          <option value="">All task types</option>
+                          <option value="Aesthetic Ranking">Aesthetic Ranking</option>
+                          <option value="Style Matching">Style Matching</option>
+                          <option value="Template Following">Template Following</option>
+                          <option value="Template Creation">Template Creation</option>
+                          <option value="Content Grading">Content Grading</option>
+                          <option value="Design Instruction">Design Instruction</option>
+                          <option value="Complete the Deck">Complete the Deck</option>
+                          <option value="A/B Preferences">A/B Preferences</option>
+                          <option value="Deck Outlines">Deck Outlines</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div class="distribution-legend" aria-hidden="true">
+                      <span class="distribution-key">Unclaimed</span>
+                      <span class="distribution-key eligible">Eligible</span>
+                    </div>
+                  </div>
+                  <div class="distribution-list" id="tagDistribution">
+                    <div class="distribution-empty">Waiting for the next poll.</div>
+                  </div>
+                </div>
+                <div class="distribution-card">
+                  <div class="distribution-card-header">
+                    <h3 class="distribution-card-title">Task type from batch name</h3>
+                    <div class="distribution-legend" aria-hidden="true">
+                      <span class="distribution-key">Unclaimed</span>
+                      <span class="distribution-key eligible">Eligible</span>
+                    </div>
+                  </div>
+                  <div class="distribution-list" id="taskTypeDistribution">
+                    <div class="distribution-empty">Waiting for the next poll.</div>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -1255,6 +1518,10 @@
                   <div class="kv-value muted" id="reviewState">-</div>
                 </div>
                 <div class="kv">
+                  <span class="label">Insightful timer</span>
+                  <div class="kv-value muted" id="insightfulState">-</div>
+                </div>
+                <div class="kv">
                   <span class="label">Shared account</span>
                   <div class="kv-value muted" id="coordinationState">not configured</div>
                 </div>
@@ -1288,11 +1555,11 @@
     <div class="timer-alert" id="timerAlert" role="alertdialog" aria-modal="true" aria-labelledby="timerAlertTitle">
       <div class="timer-alert-card">
         <div class="timer-alert-kicker">Task claimed</div>
-        <h2 class="timer-alert-title" id="timerAlertTitle">Open Insightful timer now</h2>
-        <p class="timer-alert-detail">The task was claimed successfully. Start Insightful tracking before doing any work.</p>
+        <h2 class="timer-alert-title" id="timerAlertTitle">Insightful timer status</h2>
+        <p class="timer-alert-detail" id="timerAlertDetail">Checking Insightful tracking.</p>
         <div class="timer-alert-task" id="timerAlertTask">-</div>
         <div class="timer-alert-actions">
-          <button id="ackTimerAlert">Insightful timer is on</button>
+          <button id="ackTimerAlert">Got it</button>
         </div>
       </div>
     </div>
@@ -1316,6 +1583,9 @@
       let originalTitle = document.title;
       let activeSessionId = null;
       let lastHistoryRenderSignature = "";
+      let distributionHistorySupported = true;
+      let lastDistributionHistorySignature = "";
+      let latestHistoricalDistributions = null;
 
       const $ = (id) => document.getElementById(id);
 
@@ -1403,7 +1673,7 @@
         return {
           filter,
           records: records.filter((record) => {
-            const observedAt = new Date(record.observed_at).getTime();
+            const observedAt = new Date(record.bucket_start || record.observed_at).getTime();
             return record.campaign_id === filter.campaignId
               && String(record.batch_regex || "") === String(filter.batchRegex || "")
               && nullableNumber(record.tag_count_min) === filter.tagMin
@@ -1419,7 +1689,12 @@
         const signature = JSON.stringify({
           range: $("historyRange").value,
           filter,
-          records: records.map((record) => [record.observed_at, record.total_tasks, record.matching_tasks]),
+          records: records.map((record) => [
+            record.observed_at,
+            record.total_tasks,
+            record.matching_tasks,
+            record.previously_claimed_tasks,
+          ]),
         });
         if (!force && signature === lastHistoryRenderSignature) return;
         lastHistoryRenderSignature = signature;
@@ -1428,8 +1703,8 @@
         setText(
           "historyMeta",
           records.length
-            ? `${records.length} snapshot${records.length === 1 ? "" : "s"} · every ${interval} min · ${historyFilterLabel(filter)}`
-            : `every ${interval} min · ${historyFilterLabel(filter)} · waiting for data`,
+            ? `${records.length} interval${records.length === 1 ? "" : "s"} · sum per ${interval} min · ${historyFilterLabel(filter)}`
+            : `sum per ${interval} min · ${historyFilterLabel(filter)} · waiting for data`,
         );
 
         const svg = $("historyChart");
@@ -1446,11 +1721,11 @@
         const body = $("historyBody");
         body.replaceChildren();
         if (!records.length) {
-          addSvg("text", { x: 450, y: 130, "text-anchor": "middle", fill: "#697384", "font-size": 14 }, "Waiting for the first complete 30-minute snapshot");
+          addSvg("text", { x: 450, y: 130, "text-anchor": "middle", fill: "#697384", "font-size": 14 }, "Waiting for the first complete poll");
           const row = document.createElement("tr");
           row.className = "empty-row";
           const cell = document.createElement("td");
-          cell.colSpan = 4;
+          cell.colSpan = 6;
           cell.textContent = "Waiting for the first complete poll with the selected filters.";
           row.appendChild(cell);
           body.appendChild(row);
@@ -1462,10 +1737,17 @@
         const margin = { left: 52, right: 18, top: 18, bottom: 40 };
         const plotWidth = width - margin.left - margin.right;
         const plotHeight = height - margin.top - margin.bottom;
-        const times = records.map((record) => new Date(record.observed_at).getTime());
+        const times = records.map((record) => new Date(record.bucket_start || record.observed_at).getTime());
         const minTime = Math.min(...times);
         const maxTime = Math.max(...times);
-        const maxValue = Math.max(1, ...records.flatMap((record) => [Number(record.total_tasks) || 0, Number(record.matching_tasks) || 0]));
+        const maxValue = Math.max(
+          1,
+          ...records.flatMap((record) => [
+            Number(record.total_tasks) || 0,
+            Number(record.matching_tasks) || 0,
+            Number(record.previously_claimed_tasks) || 0,
+          ]),
+        );
         const x = (time, index) => maxTime === minTime
           ? margin.left + plotWidth / 2
           : margin.left + ((time - minTime) / (maxTime - minTime)) * plotWidth;
@@ -1486,16 +1768,23 @@
         });
 
         const series = [
-          { key: "total_tasks", color: "#0f766e", label: "All unclaimed" },
-          { key: "matching_tasks", color: "#b45309", label: "Eligible" },
+          { key: "total_tasks", color: "#0f766e", label: "All unclaimed sum" },
+          { key: "matching_tasks", color: "#b45309", label: "Eligible sum" },
+          { key: "previously_claimed_tasks", color: "#7c3aed", label: "Claimed-before eligible sum" },
         ];
         series.forEach((item) => {
-          const points = records.map((record, index) => `${x(times[index], index)},${y(record[item.key])}`).join(" ");
+          const available = records
+            .map((record, index) => ({ record, index }))
+            .filter(({ record }) => record[item.key] != null);
+          if (!available.length) return;
+          const points = available
+            .map(({ record, index }) => `${x(times[index], index)},${y(record[item.key])}`)
+            .join(" ");
           addSvg("polyline", { points, fill: "none", stroke: item.color, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" });
-          records.forEach((record, index) => {
+          available.forEach(({ record, index }) => {
             const circle = addSvg("circle", { cx: x(times[index], index), cy: y(record[item.key]), r: 4, fill: "#ffffff", stroke: item.color, "stroke-width": 2 });
             const title = document.createElementNS(svgNs, "title");
-            title.textContent = `${item.label}: ${record[item.key]} at ${new Date(record.observed_at).toLocaleString()}`;
+            title.textContent = `${item.label}: ${record[item.key]} in interval starting ${new Date(record.bucket_start || record.observed_at).toLocaleString()}`;
             circle.appendChild(title);
           });
         });
@@ -1504,11 +1793,16 @@
           const row = document.createElement("tr");
           const total = Number(record.total_tasks) || 0;
           const matching = Number(record.matching_tasks) || 0;
+          const claimed = record.previously_claimed_tasks == null
+            ? null
+            : Number(record.previously_claimed_tasks) || 0;
           const values = [
-            new Date(record.observed_at).toLocaleString(),
+            new Date(record.bucket_start || record.observed_at).toLocaleString(),
             total,
             matching,
+            claimed == null ? "n/a" : claimed,
             total ? `${((matching / total) * 100).toFixed(1)}%` : "0.0%",
+            claimed == null ? "n/a" : (matching ? `${((claimed / matching) * 100).toFixed(1)}%` : "0.0%"),
           ];
           values.forEach((value) => {
             const cell = document.createElement("td");
@@ -1618,6 +1912,15 @@
         else if (review.content_grading_comments_md) parts.push(review.content_grading_comments_md);
         else if (review.output_dir) parts.push(review.output_dir);
         return parts.join(" ");
+      }
+
+      function insightfulText(status) {
+        const insightful = status.insightful || {};
+        if (insightful.state === "started") return `started: ${insightful.task_name || insightful.task_id || "target task"}`;
+        if (insightful.state === "already_running") return `already running: ${insightful.task_name || insightful.task_id || "target task"}`;
+        if (insightful.state === "failed") return `failed: ${insightful.error || "manual start required"}`;
+        if (insightful.state === "disabled") return "disabled";
+        return status.start_insightful ? "waiting for a successful claim" : "off";
       }
 
       function reviewProgressMarkdown(status, payload) {
@@ -1855,10 +2158,20 @@
           batchText(status.batch) !== "-" ? `batch ${batchText(status.batch)}` : "",
         ].filter(Boolean);
         if (state === "claimed") {
+          const insightful = status.insightful || {};
+          const timerDetail = insightful.state === "failed"
+            ? `Insightful failed: ${insightful.error || "manual start required"}`
+            : insightful.state === "started"
+              ? "Insightful timer started"
+              : insightful.state === "already_running"
+                ? "Insightful timer was already running"
+                : insightful.state === "disabled"
+                  ? "Insightful auto-start disabled"
+                  : "Insightful status unavailable";
           return {
             tone: "success",
             title: "Claimed",
-            detail: [...taskParts, status.saved ? `saved ${status.saved}` : "", status.coordination_error ? `coordination warning: ${status.coordination_error}` : ""].filter(Boolean).join(" | ") || "Task was claimed.",
+            detail: [...taskParts, timerDetail, status.saved ? `saved ${status.saved}` : "", status.coordination_error ? `coordination warning: ${status.coordination_error}` : ""].filter(Boolean).join(" | ") || "Task was claimed.",
           };
         }
         if (state === "claim_failed_continuing") {
@@ -2003,13 +2316,33 @@
       function showTimerAlert(status) {
         const taskId = status.task_id || "";
         if (localStorage.getItem(claimAlertKey(taskId))) return;
+        const insightful = status.insightful || {};
+        if (insightful.state === "started") {
+          $("timerAlertTitle").textContent = "Insightful timer started automatically";
+          $("timerAlertDetail").textContent = `Tracking is active on ${insightful.task_name || "the configured HL Grading task"}.`;
+          $("ackTimerAlert").textContent = "Got it";
+        } else if (insightful.state === "already_running") {
+          $("timerAlertTitle").textContent = "Insightful timer was already running";
+          $("timerAlertDetail").textContent = `Tracking remains active on ${insightful.task_name || "the configured HL Grading task"}.`;
+          $("ackTimerAlert").textContent = "Got it";
+        } else if (insightful.state === "failed") {
+          $("timerAlertTitle").textContent = "Start Insightful manually";
+          $("timerAlertDetail").textContent = `Automatic start failed: ${insightful.error || "unknown error"}`;
+          $("ackTimerAlert").textContent = "Insightful timer is on";
+        } else {
+          $("timerAlertTitle").textContent = "Open Insightful timer now";
+          $("timerAlertDetail").textContent = insightful.state === "disabled"
+            ? "Automatic Insightful start was disabled. Start tracking before doing any work."
+            : "The task was claimed successfully. Start Insightful tracking before doing any work.";
+          $("ackTimerAlert").textContent = "Insightful timer is on";
+        }
         $("timerAlertTask").textContent = [
           status.title ? `title: ${status.title}` : "",
           taskId ? `task: ${taskId}` : "",
           status.campaign_id ? `campaign: ${status.campaign_id}` : "",
         ].filter(Boolean).join("\n") || "Task claimed.";
         $("timerAlert").classList.add("show");
-        startTitleFlash("OPEN INSIGHTFUL TIMER");
+        startTitleFlash(insightful.state === "started" || insightful.state === "already_running" ? "TASK CLAIMED — TIMER ON" : "OPEN INSIGHTFUL TIMER");
         if ($("timerAlert").dataset.soundTaskId !== taskId) {
           $("timerAlert").dataset.soundTaskId = taskId;
           playTimerAlertSound();
@@ -2275,6 +2608,234 @@
         }
       }
 
+      function renderDistributionList(containerId, rows, kind, emptyText = "No unclaimed tasks in the latest scan.") {
+        const container = $(containerId);
+        container.replaceChildren();
+        const items = Array.isArray(rows) ? rows : [];
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "distribution-empty";
+          empty.textContent = emptyText;
+          container.appendChild(empty);
+          return;
+        }
+
+        const maximum = Math.max(
+          1,
+          ...items.flatMap((item) => [Number(item.unclaimed) || 0, Number(item.eligible) || 0]),
+        );
+        items.forEach((item) => {
+          const unclaimed = Number(item.unclaimed) || 0;
+          const eligible = Number(item.eligible) || 0;
+          const row = document.createElement("div");
+          row.className = "distribution-row";
+
+          const label = document.createElement("span");
+          label.className = "distribution-label";
+          if (kind === "tags" && item.tag_count != null) {
+            label.textContent = `${item.label} tag${Number(item.tag_count) === 1 ? "" : "s"}`;
+          } else {
+            label.textContent = item.label || "Unknown";
+          }
+          label.title = label.textContent;
+
+          const bars = document.createElement("span");
+          bars.className = "distribution-bars";
+          const unclaimedTrack = document.createElement("span");
+          unclaimedTrack.className = "distribution-track";
+          const unclaimedBar = document.createElement("span");
+          unclaimedBar.className = "distribution-bar";
+          unclaimedBar.style.width = `${(unclaimed / maximum) * 100}%`;
+          unclaimedTrack.appendChild(unclaimedBar);
+          const eligibleTrack = document.createElement("span");
+          eligibleTrack.className = "distribution-track";
+          const eligibleBar = document.createElement("span");
+          eligibleBar.className = "distribution-bar eligible";
+          eligibleBar.style.width = `${(eligible / maximum) * 100}%`;
+          eligibleTrack.appendChild(eligibleBar);
+          bars.append(unclaimedTrack, eligibleTrack);
+
+          const count = document.createElement("span");
+          count.className = "distribution-count";
+          count.textContent = `U ${unclaimed} / E ${eligible}`;
+          row.title = `${label.textContent}: ${unclaimed} unclaimed, ${eligible} eligible`;
+          row.append(label, bars, count);
+          container.appendChild(row);
+        });
+      }
+
+      function taskTypeFromBatchName(batchName) {
+        const normalized = String(batchName || "").replace(/[_/\-]+/g, " ").toUpperCase();
+        const rules = [
+          ["Aesthetic Ranking", /\bAESTHETIC\s+RANKING\b/],
+          ["Style Matching", /\bSTYLE\s+MATCHING\b/],
+          ["Template Following", /\bTEMPLATE\s+FOLLOWING\b/],
+          ["Template Creation", /\bTEMPLATE\s+CREATION\b/],
+          ["Content Grading", /\bCONTENT\s+GRADING\b/],
+          ["Design Instruction", /\bDESIGN\s+INSTRUCTIONS?\b/],
+          ["Complete the Deck", /\bCOMPLETE\s+THE\s+DECK\b/],
+          ["A/B Preferences", /\bA\s+B\s+PREFERENCES?\b/],
+          ["Deck Outlines", /\bDECK\s+OUTLINES?\b/],
+        ];
+        return rules.find(([_label, pattern]) => pattern.test(normalized))?.[0] || "Other";
+      }
+
+      function distributionsFromPoll(snapshot, status) {
+        if (!snapshot?.time) return null;
+        const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+        const knownTypes = [
+          "Aesthetic Ranking",
+          "Style Matching",
+          "Template Following",
+          "Template Creation",
+          "Content Grading",
+          "Design Instruction",
+          "Complete the Deck",
+          "A/B Preferences",
+          "Deck Outlines",
+        ];
+        const tagCounts = new Map();
+        const typeCounts = new Map(knownTypes.map((label) => [label, { unclaimed: 0, eligible: 0 }]));
+        tasks.forEach((task) => {
+          const tagKey = task.tagCount == null ? "unknown" : String(task.tagCount);
+          if (!tagCounts.has(tagKey)) {
+            tagCounts.set(tagKey, {
+              tag_count: task.tagCount,
+              label: task.tagCount == null ? "Unknown" : String(task.tagCount),
+              unclaimed: 0,
+              eligible: 0,
+            });
+          }
+          const tagBucket = tagCounts.get(tagKey);
+          tagBucket.unclaimed += 1;
+          const typeLabel = taskTypeFromBatchName(task.batch);
+          if (!typeCounts.has(typeLabel)) typeCounts.set(typeLabel, { unclaimed: 0, eligible: 0 });
+          const typeBucket = typeCounts.get(typeLabel);
+          typeBucket.unclaimed += 1;
+          if (taskDecision(task, status).eligible) {
+            tagBucket.eligible += 1;
+            typeBucket.eligible += 1;
+          }
+        });
+
+        const reported = nullableNumber(status.total_unclaimed_count ?? status.unclaimed_count);
+        const complete = !status.batch_regex
+          && status.history_sample_complete !== false
+          && reported === tasks.length;
+        const taskTypes = knownTypes.map((label) => ({ label, ...typeCounts.get(label) }));
+        if (typeCounts.has("Other")) taskTypes.push({ label: "Other", ...typeCounts.get("Other") });
+        return {
+          complete,
+          source: complete ? "campaign" : "matched_batches",
+          scanned_unclaimed_count: tasks.length,
+          reported_unclaimed_count: reported,
+          eligible_count: tasks.filter((task) => taskDecision(task, status).eligible).length,
+          tag_counts: [...tagCounts.values()].sort((left, right) => {
+            if (left.tag_count == null) return 1;
+            if (right.tag_count == null) return -1;
+            return left.tag_count - right.tag_count;
+          }),
+          task_types: taskTypes,
+        };
+      }
+
+      function selectedDistributionRange() {
+        const selected = $("distributionRange").value;
+        if (selected === "all") return { query: "all", minutes: null };
+        if (selected !== "custom") {
+          const minutes = Math.max(1, Number(selected) || 30);
+          return { query: String(minutes), minutes };
+        }
+        const value = Math.max(1, Number($("distributionCustomValue").value) || 1);
+        const unit = Math.max(1, Number($("distributionCustomUnit").value) || 1);
+        const minutes = Math.round(value * unit);
+        return { query: String(minutes), minutes };
+      }
+
+      function distributionWindowLabel(minutes) {
+        if (minutes == null) return "all retained data";
+        if (minutes < 60) return `last ${minutes} minute${minutes === 1 ? "" : "s"}`;
+        if (minutes % 1440 === 0) {
+          const days = minutes / 1440;
+          return `last ${days} day${days === 1 ? "" : "s"}`;
+        }
+        if (minutes % 60 === 0) {
+          const hours = minutes / 60;
+          return `last ${hours} hour${hours === 1 ? "" : "s"}`;
+        }
+        return `last ${minutes} minutes`;
+      }
+
+      async function loadHistoricalDistributions(status, force = false) {
+        if (!distributionHistorySupported) return null;
+        const filter = currentHistoryFilter(status);
+        if (!filter.campaignId) return null;
+        const range = selectedDistributionRange();
+        const signature = JSON.stringify({
+          campaignId: filter.campaignId,
+          batchRegex: filter.batchRegex,
+          tagMin: filter.tagMin,
+          tagMax: filter.tagMax,
+          tagTaskType: $("tagDistributionTaskType").value,
+          range: range.query,
+          lastPoll: status.last_poll,
+        });
+        if (!force && signature === lastDistributionHistorySignature) {
+          return latestHistoricalDistributions;
+        }
+        const params = new URLSearchParams({
+          campaign_id: filter.campaignId,
+          batch_regex: filter.batchRegex || "",
+          tag_min: filter.tagMin == null ? "" : String(filter.tagMin),
+          tag_max: filter.tagMax == null ? "" : String(filter.tagMax),
+          tag_task_type: $("tagDistributionTaskType").value,
+          minutes: range.query,
+        });
+        try {
+          latestHistoricalDistributions = await api(`/api/distribution-history?${params}`);
+          lastDistributionHistorySignature = signature;
+          return latestHistoricalDistributions;
+        } catch {
+          distributionHistorySupported = false;
+          latestHistoricalDistributions = null;
+          return null;
+        }
+      }
+
+      function renderDistributions(distributions) {
+        if (!distributions) {
+          setText("distributionMeta", "waiting for the next poll");
+          renderDistributionList("tagDistribution", [], "tags", "Waiting for the next poll.");
+          renderDistributionList("taskTypeDistribution", [], "types", "Waiting for the next poll.");
+          return;
+        }
+
+        const scanned = Number(distributions.scanned_unclaimed_count) || 0;
+        const reported = distributions.reported_unclaimed_count;
+        const eligible = Number(distributions.eligible_count) || 0;
+        const scope = distributions.source === "matched_batches" ? "matched batches" : "campaign";
+        if (distributions.historical) {
+          const pollCount = Number(distributions.poll_count) || 0;
+          const observationCount = Number(distributions.observation_count) || 0;
+          const partialPollCount = Number(distributions.partial_poll_count) || 0;
+          setText(
+            "distributionMeta",
+            `${distributionWindowLabel(distributions.range_minutes)} | ${scanned} unique unclaimed | ${eligible} eligible | ${observationCount} observations retained across ${pollCount} polls${distributions.tag_task_type ? ` | tag chart: ${distributions.tag_task_type}` : ""}${partialPollCount ? ` | ${partialPollCount} partial polls` : ""}`,
+          );
+          renderDistributionList("tagDistribution", distributions.tag_counts, "tags", "No tasks observed in this window.");
+          renderDistributionList("taskTypeDistribution", distributions.task_types, "types", "No tasks observed in this window.");
+          return;
+        }
+        setText(
+          "distributionMeta",
+          distributions.complete
+            ? `full ${scope} scan | ${scanned} unclaimed | ${eligible} eligible`
+            : `partial ${scope} scan | ${scanned}/${reported ?? "?"} unclaimed loaded | ${eligible} eligible`,
+        );
+        renderDistributionList("tagDistribution", distributions.tag_counts, "tags");
+        renderDistributionList("taskTypeDistribution", distributions.task_types, "types");
+      }
+
       async function refresh() {
         latest = await api("/api/state");
         const status = latest.status || {};
@@ -2296,6 +2857,15 @@
         setText("lastPoll", status.last_poll ? `last poll ${status.last_poll}` : "-");
         setText("eligible", status.matching_count);
         setText("eligibleNote", status.history_sample_complete === false ? "latest poll incomplete" : "current filters");
+        setText("claimedBefore", status.previously_claimed_count);
+        setText(
+          "claimedBeforeNote",
+          status.claim === false
+            ? "checked only in claim mode"
+            : status.claim_history_sample_complete === false
+            ? `${status.claim_history_checked_count ?? 0}/${status.matching_count ?? 0} histories checked`
+            : "eligible tasks with claim history",
+        );
         setText("nextPoll", status.next_sleep_seconds == null ? (running && phase === "polling" ? "now" : "-") : `${status.next_sleep_seconds}s`);
         setText("batchMatches", status.active_batch_matches);
         setText("batchRegexView", status.batch_regex || $("batchRegex").value || "-");
@@ -2312,6 +2882,7 @@
         setText("taskTagCount", status.tag_count);
         setText("taskSaved", status.saved);
         setText("reviewState", reviewText(status));
+        setText("insightfulState", insightfulText(status));
         const coordination = latest.coordination || {};
         const holder = status.coordination_holder || {};
         setText(
@@ -2324,6 +2895,12 @@
         $("releaseCoordination").disabled = running;
         renderSeenTasks(pollSnapshot, status);
         renderClaimResult(status, pollSnapshot);
+        const historicalDistributions = await loadHistoricalDistributions(status);
+        renderDistributions(
+          historicalDistributions
+          || status.task_distributions
+          || distributionsFromPoll(pollSnapshot, status),
+        );
         renderTaskHistory(latest.task_history, status);
         await refreshReviewOutput(status);
 
@@ -2360,6 +2937,8 @@
           intervalMax: Number($("intervalMax").value),
           claim: $("claim").checked,
           openTask: $("openTask").checked,
+          startInsightful: $("startInsightful").checked,
+          insightfulTaskPrefix: $("insightfulTaskPrefix").value.trim(),
           autoReview: $("autoReview").checked,
           allowBackgroundRun: $("allowBackgroundRun").checked,
         };
@@ -2459,6 +3038,23 @@
         renderTaskHistory(latest?.task_history, latest?.status || {}, true);
       });
       $("historyRange").addEventListener("change", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
+      $("distributionRange").addEventListener("change", () => {
+        $("distributionCustomRange").hidden = $("distributionRange").value !== "custom";
+        lastDistributionHistorySignature = "";
+        refresh().catch((error) => setMessage(error.message));
+      });
+      $("distributionCustomValue").addEventListener("input", () => {
+        lastDistributionHistorySignature = "";
+        refresh().catch((error) => setMessage(error.message));
+      });
+      $("distributionCustomUnit").addEventListener("change", () => {
+        lastDistributionHistorySignature = "";
+        refresh().catch((error) => setMessage(error.message));
+      });
+      $("tagDistributionTaskType").addEventListener("change", () => {
+        lastDistributionHistorySignature = "";
+        refresh().catch((error) => setMessage(error.message));
+      });
       $("reviewMode").addEventListener("change", applyReviewModeDefaults);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {

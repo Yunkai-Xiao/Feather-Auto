@@ -23,6 +23,7 @@ from .coordination import (
     account_key_for_user,
     default_owner_label,
 )
+from .insightful import DEFAULT_TASK_PREFIX, start_insightful_timer
 
 
 BASE_URL = "https://feather.openai.com"
@@ -34,8 +35,34 @@ SAFE_REQUEST_RETRIES = 2
 SAFE_REQUEST_RETRY_DELAY_SECONDS = 0.75
 MAX_SEARCH_PAGES = 100
 CAMPAIGN_SEARCH_PAGE_THRESHOLD = 4
+DISTRIBUTION_FULL_SCAN_INTERVAL_SECONDS = 30.0
+TASK_HISTORY_BATCH_SIZE = 25
 Emit = Callable[..., None]
 StatusCallback = Callable[[dict[str, Any]], None]
+
+TASK_TYPE_LABELS = (
+    "Aesthetic Ranking",
+    "Style Matching",
+    "Template Following",
+    "Template Creation",
+    "Content Grading",
+    "Design Instruction",
+    "Complete the Deck",
+    "A/B Preferences",
+    "Deck Outlines",
+)
+
+TASK_TYPE_PATTERNS = (
+    ("Aesthetic Ranking", re.compile(r"\bAESTHETIC\s+RANKING\b", re.I)),
+    ("Style Matching", re.compile(r"\bSTYLE\s+MATCHING\b", re.I)),
+    ("Template Following", re.compile(r"\bTEMPLATE\s+FOLLOWING\b", re.I)),
+    ("Template Creation", re.compile(r"\bTEMPLATE\s+CREATION\b", re.I)),
+    ("Content Grading", re.compile(r"\bCONTENT\s+GRADING\b", re.I)),
+    ("Design Instruction", re.compile(r"\bDESIGN\s+INSTRUCTIONS?\b", re.I)),
+    ("Complete the Deck", re.compile(r"\bCOMPLETE\s+THE\s+DECK\b", re.I)),
+    ("A/B Preferences", re.compile(r"\bA\s+B\s+PREFERENCES?\b", re.I)),
+    ("Deck Outlines", re.compile(r"\bDECK\s+OUTLINES?\b", re.I)),
+)
 
 UPDATE_TASK_STATUS_QUERY = """
 mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersionIds: [UUID!]) {
@@ -61,6 +88,70 @@ mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersion
 }
 """.strip()
 
+TASK_HISTORY_QUERY = """
+query TaskHistory($taskId: UUID!) {
+  taskHistory(taskId: $taskId) {
+    ...TaskHistoryVersion
+    __typename
+  }
+}
+
+fragment TaskHistoryVersion on TaskHistoryVersion {
+  version
+  entries {
+    __typename
+    ...TaskStatusHistoryEntry
+    ...TaskAction
+  }
+  __typename
+}
+
+fragment TaskStatusHistoryEntry on TaskStatusHistoryEntry {
+  __typename
+  id
+  workflowStatus
+  transitionReason
+  createdAt
+  completedIn {
+    days
+    hours
+    minutes
+    __typename
+  }
+  taskVersion {
+    createdAt
+    version
+    user {
+      id
+      email
+      isAnonymized
+      __typename
+    }
+    __typename
+  }
+  user {
+    id
+    email
+    isAnonymized
+    __typename
+  }
+}
+
+fragment TaskAction on TaskAction {
+  __typename
+  actionName
+  actionStatus
+  onBehalfOf {
+    id
+    email
+    isAnonymized
+    __typename
+  }
+  createdOrCompletedAt
+  parameters
+}
+""".strip()
+
 
 @dataclass
 class MonitorConfig:
@@ -82,6 +173,8 @@ class MonitorConfig:
     task_kind: str | None = None
     tag_count_min: int | None = None
     tag_count_max: int | None = None
+    start_insightful: bool = False
+    insightful_task_prefix: str = DEFAULT_TASK_PREFIX
     coordination_url: str | None = None
     coordination_token: str | None = None
     coordination_owner: str | None = None
@@ -586,6 +679,109 @@ def task_batch_name_label(task: dict[str, Any]) -> str:
     return str(value).replace("\r", " ").replace("\n", " ")
 
 
+def task_type_from_batch_name(batch_name: str | None) -> str:
+    """Classify the known task type phrases embedded in Feather batch names."""
+    normalized = re.sub(r"[_/\-]+", " ", str(batch_name or ""))
+    for label, pattern in TASK_TYPE_PATTERNS:
+        if pattern.search(normalized):
+            return label
+    return "Other"
+
+
+def task_type_label(task: dict[str, Any]) -> str:
+    return task_type_from_batch_name(
+        str(task.get("task_batch_name") or task.get("batch_name") or "")
+    )
+
+
+def task_distributions(
+    unclaimed_tasks: list[dict[str, Any]],
+    eligible_tasks: list[dict[str, Any]],
+    *,
+    total_unclaimed_count: int | None,
+    complete: bool,
+    source: str,
+) -> dict[str, Any]:
+    """Build UI-ready tag-count and batch-derived task-type distributions."""
+
+    def increment(counts: dict[Any, int], key: Any) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    unclaimed_tag_counts: dict[int | None, int] = {}
+    eligible_tag_counts: dict[int | None, int] = {}
+    unclaimed_type_counts = {label: 0 for label in TASK_TYPE_LABELS}
+    eligible_type_counts = {label: 0 for label in TASK_TYPE_LABELS}
+
+    for task in unclaimed_tasks:
+        increment(unclaimed_tag_counts, task_tag_count(task))
+        increment(unclaimed_type_counts, task_type_label(task))
+    for task in eligible_tasks:
+        increment(eligible_tag_counts, task_tag_count(task))
+        increment(eligible_type_counts, task_type_label(task))
+
+    tag_keys = sorted(
+        set(unclaimed_tag_counts) | set(eligible_tag_counts),
+        key=lambda value: (value is None, value if value is not None else 0),
+    )
+    type_labels = list(TASK_TYPE_LABELS)
+    if unclaimed_type_counts.get("Other", 0) or eligible_type_counts.get("Other", 0):
+        type_labels.append("Other")
+
+    return {
+        "complete": complete,
+        "source": source,
+        "scanned_unclaimed_count": len(unclaimed_tasks),
+        "reported_unclaimed_count": total_unclaimed_count,
+        "eligible_count": len(eligible_tasks),
+        "tag_counts": [
+            {
+                "tag_count": tag_count,
+                "label": "Unknown" if tag_count is None else str(tag_count),
+                "unclaimed": unclaimed_tag_counts.get(tag_count, 0),
+                "eligible": eligible_tag_counts.get(tag_count, 0),
+            }
+            for tag_count in tag_keys
+        ],
+        "task_types": [
+            {
+                "label": label,
+                "unclaimed": unclaimed_type_counts.get(label, 0),
+                "eligible": eligible_type_counts.get(label, 0),
+            }
+            for label in type_labels
+        ],
+    }
+
+
+def task_observation_records(
+    unclaimed_tasks: list[dict[str, Any]],
+    eligible_tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return the durable, non-secret task fields needed for historical distributions."""
+    eligible_ids = {
+        str(task.get("id") or "").strip()
+        for task in eligible_tasks
+        if str(task.get("id") or "").strip()
+    }
+    observations: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for task in unclaimed_tasks:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id or task_id in seen_ids:
+            continue
+        seen_ids.add(task_id)
+        observations.append(
+            {
+                "task_id": task_id,
+                "tag_count": task_tag_count(task),
+                "task_type": task_type_label(task),
+                "batch_name": str(task.get("task_batch_name") or task.get("batch_name") or ""),
+                "eligible": task_id in eligible_ids,
+            }
+        )
+    return observations
+
+
 def emit_task_tag_counts(tasks: list[dict[str, Any]], emit: Emit) -> None:
     for index, task in enumerate(tasks, start=1):
         task_id = task.get("id") or "unknown"
@@ -757,6 +953,121 @@ def claim_payload(task_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def task_history_payload(task_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "operationName": "TaskHistory",
+            "variables": {"taskId": task_id},
+            "query": TASK_HISTORY_QUERY,
+        }
+    ]
+
+
+def _task_history_from_graphql_item(item: Any) -> list[dict[str, Any]]:
+    if not isinstance(item, dict):
+        raise RuntimeError("TaskHistory returned an invalid GraphQL response.")
+    if item.get("errors"):
+        preview = json.dumps(item["errors"], ensure_ascii=False, separators=(",", ":"))[:1200]
+        raise RuntimeError(f"TaskHistory GraphQL error: {preview}")
+
+    data = item.get("data")
+    history = data.get("taskHistory") if isinstance(data, dict) else None
+    if history is None:
+        raise RuntimeError("TaskHistory response did not include data.taskHistory.")
+    if isinstance(history, dict):
+        history = [history]
+    if not isinstance(history, list) or not all(isinstance(version, dict) for version in history):
+        raise RuntimeError("TaskHistory returned an invalid history list.")
+    return history
+
+
+def fetch_task_histories(
+    headers: dict[str, str],
+    task_ids: list[str],
+    session: requests.Session | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    unique_task_ids = list(dict.fromkeys(str(task_id).strip() for task_id in task_ids if str(task_id).strip()))
+    if not unique_task_ids:
+        return {}
+
+    payload = [task_history_payload(task_id)[0] for task_id in unique_task_ids]
+    response = request_with_retries(
+        "POST",
+        f"{BASE_URL}/api/graphql",
+        headers=headers,
+        data=json.dumps(payload, separators=(",", ":")),
+        session=session,
+    )
+    if response.status_code in (401, 403):
+        raise RuntimeError(
+            f"auth failed during task history check: HTTP {response.status_code} {response.text[:160]}"
+        )
+    response.raise_for_status()
+
+    body = response.json()
+    items = body if isinstance(body, list) else [body]
+    if len(items) != len(unique_task_ids):
+        raise RuntimeError(
+            f"TaskHistory returned {len(items)} result(s) for {len(unique_task_ids)} task(s)."
+        )
+    return {
+        task_id: _task_history_from_graphql_item(item)
+        for task_id, item in zip(unique_task_ids, items)
+    }
+
+
+def fetch_task_history(
+    headers: dict[str, str],
+    task_id: str,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    return fetch_task_histories(headers, [task_id], session=session)[task_id]
+
+
+def was_previously_claimed(history: list[dict[str, Any]]) -> bool:
+    for history_version in history:
+        entries = history_version.get("entries")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("workflowStatus") or "").upper()
+            if status in {"IN_PROGRESS", "COMPLETED"}:
+                return True
+    return False
+
+
+def completed_history_evidence(
+    history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the first prior completion, regardless of the Feather user identity."""
+    for history_version in history:
+        entries = history_version.get("entries")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("workflowStatus") or "").upper() != "COMPLETED":
+                continue
+
+            actor = entry.get("user")
+            if not isinstance(actor, dict) or not actor:
+                task_version = entry.get("taskVersion")
+                actor = task_version.get("user") if isinstance(task_version, dict) else None
+            actor = actor if isinstance(actor, dict) else {}
+
+            return {
+                "history_version": history_version.get("version"),
+                "completed_at": entry.get("createdAt"),
+                "completed_by_user_id": actor.get("id"),
+                "completed_by_user_email": actor.get("email"),
+                "completed_by_unknown_user": not bool(actor.get("id") or actor.get("email")),
+            }
+    return None
+
+
 def claim_task(
     headers: dict[str, str],
     task_id: str,
@@ -920,6 +1231,26 @@ def save_found(path: str | None, task: dict[str, Any], response: dict[str, Any])
         json.dump(artifact, handle, ensure_ascii=False, indent=2)
 
 
+def start_insightful_after_claim(config: MonitorConfig, emit: Emit = print) -> dict[str, Any]:
+    if not config.start_insightful:
+        return {"state": "disabled"}
+    emit(
+        f'INSIGHTFUL_STARTING task_prefix="{config.insightful_task_prefix}"',
+        flush=True,
+    )
+    try:
+        result = start_insightful_timer(config.insightful_task_prefix)
+        emit(
+            f'INSIGHTFUL_{result["state"].upper()} task={result.get("task_id", "unknown")}',
+            flush=True,
+        )
+        return result
+    except Exception as exc:
+        error = str(exc).strip() or type(exc).__name__
+        emit(f"INSIGHTFUL_FAILED {error}", flush=True)
+        return {"state": "failed", "error": error}
+
+
 def print_claim_result(
     claim_headers: dict[str, str],
     search_headers: dict[str, str],
@@ -1012,6 +1343,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tag-count", type=int, help="Shorthand for --tag-count-min N --tag-count-max N.")
     parser.add_argument("--tag-count-min", type=int, help="Only match tasks with at least this many tags.")
     parser.add_argument("--tag-count-max", type=int, help="Only match tasks with at most this many tags.")
+    parser.add_argument(
+        "--start-insightful",
+        action="store_true",
+        help="After a successful claim, open Insightful and start the configured task timer.",
+    )
+    parser.add_argument(
+        "--insightful-task-prefix",
+        default=os.environ.get("INSIGHTFUL_TASK_PREFIX", DEFAULT_TASK_PREFIX),
+        help=f'Insightful task-name prefix to start (default: "{DEFAULT_TASK_PREFIX}").',
+    )
     parser.add_argument("--save", default="last_found_task.json", help="Where to save the found task JSON. Use empty string to disable.")
     parser.add_argument("--log-file", help="Append stdout/stderr to this file.")
     parser.add_argument("--status-file", help="Continuously write current monitor status as JSON.")
@@ -1064,6 +1405,8 @@ def _run_monitor_impl(
         raise SystemExit("Use --tag-count-max >= 0.")
     if config.tag_count_min is not None and config.tag_count_max is not None and config.tag_count_max < config.tag_count_min:
         raise SystemExit("Use --tag-count-max >= --tag-count-min.")
+    if config.start_insightful and not config.insightful_task_prefix.strip():
+        raise SystemExit("Use a non-empty --insightful-task-prefix when --start-insightful is enabled.")
     tag_count_filter = tag_count_filter_payload(config.tag_count_min, config.tag_count_max)
     batch_regex = effective_batch_regex(config.batch_regex, config.batch_suffix)
     compile_batch_regex(batch_regex)
@@ -1083,7 +1426,10 @@ def _run_monitor_impl(
             status.setdefault("coordination_owner", coordination_lease.config.owner_label)
             status.setdefault("coordination_phase", coordination_lease.phase)
         payload = status_payload(**status)
-        write_status_payload(config.status_file, payload)
+        write_status_payload(
+            config.status_file,
+            {key: value for key, value in payload.items() if key != "task_observations"},
+        )
         if status_callback:
             status_callback(payload)
 
@@ -1244,7 +1590,9 @@ def _run_monitor_impl(
         emit(f"tag_count_range={min_label}..{max_label}", flush=True)
 
     seen: set[str] = set()
+    claim_history_cache: dict[str, list[dict[str, Any]]] = {}
     last_batch_signature = tuple(current_batch_search_ids)
+    last_distribution_full_scan_at: float | None = None
     while True:
         if stop_requested():
             emit("STOPPED", flush=True)
@@ -1260,6 +1608,7 @@ def _run_monitor_impl(
             return 0
 
         now = time.strftime("%H:%M:%S")
+        poll_observation_id = f"{time.time_ns()}-{os.getpid()}"
         poll_errors: list[tuple[str, requests.exceptions.RequestException]] = []
         if config.batch_name or batch_regex:
             try:
@@ -1289,13 +1638,17 @@ def _run_monitor_impl(
                 )
 
         tasks: list[dict[str, Any]] = []
+        distribution_tasks: list[dict[str, Any]] = []
         response_by_task_id: dict[str, dict[str, Any]] = {}
         seen_poll_task_ids: set[str] = set()
+        seen_distribution_task_ids: set[str] = set()
         total_unclaimed_count: int | None = None
         page_searches = 0
         search_mode = "batch"
         searches_to_run = search_payloads
         campaign_pages: list[dict[str, Any]] | None = None
+        distribution_campaign_pages: list[dict[str, Any]] | None = None
+        probe_data: dict[str, Any] | None = None
 
         if config.batch_id or config.batch_name or batch_regex:
             probe_payload = campaign_search_payload(payload)
@@ -1348,6 +1701,7 @@ def _run_monitor_impl(
                         search_mode = "campaign"
                         page_searches += max(0, len(campaign_pages) - 1)
                         searches_to_run = []
+                        last_distribution_full_scan_at = time.monotonic()
                 else:
                     page_label = "unknown" if campaign_page_total is None else str(campaign_page_total)
                     emit(
@@ -1355,6 +1709,55 @@ def _run_monitor_impl(
                         f"threshold={CAMPAIGN_SEARCH_PAGE_THRESHOLD}",
                         flush=True,
                     )
+
+        distribution_scan_due = (
+            campaign_pages is None
+            and probe_data is not None
+            and (
+                last_distribution_full_scan_at is None
+                or time.monotonic() - last_distribution_full_scan_at
+                >= DISTRIBUTION_FULL_SCAN_INTERVAL_SECONDS
+            )
+        )
+        if distribution_scan_due:
+            try:
+                if stop_event is None:
+                    distribution_campaign_pages = poll_all_pages(
+                        search_headers,
+                        probe_payload,
+                        first_page=probe_data,
+                        session=session,
+                    )
+                else:
+                    distribution_campaign_pages = poll_all_pages(
+                        search_headers,
+                        probe_payload,
+                        first_page=probe_data,
+                        stop_requested=stop_requested,
+                        session=session,
+                    )
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if config.once:
+                    raise
+                poll_errors.append(("distribution_campaign_pages", exc))
+                emit(
+                    f"[{now}] {recoverable_poll_error_name(exc)} target=distribution "
+                    f"search_mode=campaign attempts={SAFE_REQUEST_RETRIES + 1} "
+                    f"timeout={REQUEST_TIMEOUT_SECONDS}s error={exc}",
+                    flush=True,
+                )
+            else:
+                last_distribution_full_scan_at = time.monotonic()
+                page_searches += max(0, len(distribution_campaign_pages) - 1)
+                campaign_pages = distribution_campaign_pages
+                search_mode = "campaign"
+                searches_to_run = []
+                emit(
+                    f"[{now}] distribution_scan=campaign "
+                    f"pages={len(distribution_campaign_pages)} interval_seconds="
+                    f"{DISTRIBUTION_FULL_SCAN_INTERVAL_SECONDS:g}",
+                    flush=True,
+                )
 
         page_groups: list[tuple[str | None, list[dict[str, Any]]]] = []
         if campaign_pages is not None:
@@ -1392,6 +1795,11 @@ def _run_monitor_impl(
         for _batch_id, page_responses in page_groups:
             for data in page_responses:
                 for task in data.get("tasks", []):
+                    distribution_task_id = str(task.get("id") or "").strip()
+                    distribution_key = distribution_task_id or json.dumps(task, sort_keys=True, default=str)
+                    if distribution_key not in seen_distribution_task_ids:
+                        seen_distribution_task_ids.add(distribution_key)
+                        distribution_tasks.append(task)
                     if search_mode == "campaign" and not task_matches_filters(
                         task,
                         config.batch_id,
@@ -1409,11 +1817,27 @@ def _run_monitor_impl(
                         seen_poll_task_ids.add(task_id)
                         response_by_task_id[task_id] = data
                     tasks.append(task)
+
+        if distribution_campaign_pages is not None:
+            distribution_tasks = []
+            seen_distribution_task_ids.clear()
+            for data in distribution_campaign_pages:
+                for task in data.get("tasks", []):
+                    distribution_task_id = str(task.get("id") or "").strip()
+                    distribution_key = distribution_task_id or json.dumps(
+                        task,
+                        sort_keys=True,
+                        default=str,
+                    )
+                    if distribution_key in seen_distribution_task_ids:
+                        continue
+                    seen_distribution_task_ids.add(distribution_key)
+                    distribution_tasks.append(task)
         if not (config.batch_id or config.batch_name or batch_regex):
             total_unclaimed_count = len(tasks)
 
-        matching_count = sum(
-            1
+        matching_tasks = [
+            task
             for task in tasks
             if task_matches_filters(
                 task,
@@ -1424,6 +1848,106 @@ def _run_monitor_impl(
                 config.tag_count_min,
                 config.tag_count_max,
             )
+        ]
+        matching_count = len(matching_tasks)
+        distribution_eligible_tasks = [
+            task
+            for task in distribution_tasks
+            if task_matches_filters(
+                task,
+                config.batch_id,
+                config.batch_name,
+                batch_regex,
+                allowed_batch_refs,
+                config.tag_count_min,
+                config.tag_count_max,
+            )
+        ]
+        current_task_ids = {
+            str(task.get("id") or "").strip()
+            for task in tasks
+            if str(task.get("id") or "").strip()
+        }
+        for cached_task_id in list(claim_history_cache):
+            if cached_task_id not in current_task_ids:
+                claim_history_cache.pop(cached_task_id, None)
+
+        eligible_task_ids = (
+            list(
+                dict.fromkeys(
+                    str(task.get("id") or "").strip()
+                    for task in matching_tasks
+                    if str(task.get("id") or "").strip()
+                )
+            )
+            if config.claim
+            else []
+        )
+        unchecked_task_ids = [
+            task_id for task_id in eligible_task_ids if task_id not in claim_history_cache
+        ]
+        claim_history_errors: list[str] = []
+        for start in range(0, len(unchecked_task_ids), TASK_HISTORY_BATCH_SIZE):
+            batch_task_ids = unchecked_task_ids[start:start + TASK_HISTORY_BATCH_SIZE]
+            try:
+                histories = fetch_task_histories(
+                    search_headers,
+                    batch_task_ids,
+                    session=session,
+                )
+            except (requests.exceptions.RequestException, RuntimeError, ValueError) as exc:
+                claim_history_errors.append(str(exc))
+                emit(
+                    f"TASK_HISTORY_BATCH_FAILED tasks={len(batch_task_ids)} "
+                    f"error={type(exc).__name__} retry=next_poll",
+                    flush=True,
+                )
+                continue
+            for history_task_id, history in histories.items():
+                claim_history_cache[history_task_id] = history
+
+        previously_claimed_count = (
+            sum(
+                1
+                for task_id in eligible_task_ids
+                if task_id in claim_history_cache
+                and was_previously_claimed(claim_history_cache[task_id])
+            )
+            if config.claim
+            else None
+        )
+        claim_history_sample_complete = (
+            len(eligible_task_ids) == matching_count
+            and all(task_id in claim_history_cache for task_id in eligible_task_ids)
+            if config.claim
+            else None
+        )
+        history_sample_complete = not poll_errors and total_unclaimed_count is not None
+        distribution_is_campaign = (
+            distribution_campaign_pages is not None
+            or search_mode == "campaign"
+            or not (
+                config.batch_id
+                or config.batch_name
+                or batch_regex
+                or batch_id_from_payload(payload)
+            )
+        )
+        distributions = task_distributions(
+            distribution_tasks,
+            distribution_eligible_tasks,
+            total_unclaimed_count=total_unclaimed_count,
+            complete=(
+                not poll_errors
+                and distribution_is_campaign
+                and total_unclaimed_count is not None
+                and len(distribution_tasks) == total_unclaimed_count
+            ),
+            source="campaign" if distribution_is_campaign else "matched_batches",
+        )
+        observation_records = task_observation_records(
+            distribution_tasks,
+            distribution_eligible_tasks,
         )
         poll_error_fields: dict[str, Any] = {}
         if poll_errors:
@@ -1431,6 +1955,9 @@ def _run_monitor_impl(
                 "poll_error_count": len(poll_errors),
                 "last_error": str(poll_errors[-1][1])[:500],
             }
+        if claim_history_errors:
+            poll_error_fields["claim_history_error_count"] = len(claim_history_errors)
+            poll_error_fields["claim_history_last_error"] = claim_history_errors[-1][:500]
 
         poll_observation_emitted = False
 
@@ -1443,7 +1970,8 @@ def _run_monitor_impl(
                 f"[{now}] tasks={len(tasks)} batch_searches={len(searches_to_run)} "
                 f"page_searches={page_searches} search_mode={search_mode} "
                 f"total_unclaimed={total_unclaimed_count if total_unclaimed_count is not None else '?'} "
-                f"matching={matching_count}",
+                f"matching={matching_count} previously_claimed={previously_claimed_count} "
+                f"claim_history_complete={'true' if claim_history_sample_complete else 'false'}",
                 flush=True,
             )
             if tasks:
@@ -1460,7 +1988,15 @@ def _run_monitor_impl(
                 unclaimed_count=len(tasks),
                 total_unclaimed_count=total_unclaimed_count,
                 matching_count=matching_count,
-                history_sample_complete=not poll_errors and total_unclaimed_count is not None,
+                task_distributions=distributions,
+                task_observations=observation_records,
+                poll_observation_id=poll_observation_id,
+                previously_claimed_count=previously_claimed_count,
+                claim_history_checked_count=sum(
+                    1 for task_id in eligible_task_ids if task_id in claim_history_cache
+                ),
+                claim_history_sample_complete=claim_history_sample_complete,
+                history_sample_complete=history_sample_complete,
                 search_pages=page_searches,
                 last_poll=now,
                 **poll_error_fields,
@@ -1546,6 +2082,33 @@ def _run_monitor_impl(
                     task_id=task_id,
                     task_kind=config.task_kind or task.get("kind"),
                 )
+                task_history = claim_history_cache.get(str(task_id))
+                if task_history is None:
+                    seen.discard(task_id)
+                    emit(
+                        f"TASK_HISTORY_CHECK_UNAVAILABLE_SKIP task={task_id} retry=next_poll",
+                        flush=True,
+                    )
+                    continue
+
+                completed_history = completed_history_evidence(task_history)
+                if completed_history is not None:
+                    actor = (
+                        completed_history.get("completed_by_user_email")
+                        or completed_history.get("completed_by_user_id")
+                        or "unknown"
+                    )
+                    emit(
+                        f"CLAIM_SKIPPED_PREVIOUSLY_COMPLETED task={task_id} "
+                        f"version={completed_history.get('history_version')} actor={actor}",
+                        flush=True,
+                    )
+                    continue
+
+                emit(
+                    f"TASK_HISTORY_SAFE task={task_id} versions={len(task_history)}",
+                    flush=True,
+                )
                 claim_succeeded = print_claim_result(
                     claim_headers,
                     search_headers,
@@ -1596,6 +2159,7 @@ def _run_monitor_impl(
                         coordination_lease.phase = "working_unconfirmed"
                         coordination_error = str(exc)
                         emit(f"COORDINATION_WORKING_FAILED task={task_id} error={coordination_error}", flush=True)
+                insightful_result = start_insightful_after_claim(config, emit=emit)
                 update_status(
                     state="claimed",
                     campaign_id=config.campaign_id,
@@ -1606,6 +2170,7 @@ def _run_monitor_impl(
                     tag_count_filter=tag_count_filter,
                     saved=save_path,
                     coordination_error=coordination_error,
+                    insightful=insightful_result,
                 )
                 emit(f"CLAIM_SUCCEEDED_STOPPING {task_id}", flush=True)
             else:
@@ -1660,7 +2225,13 @@ def _run_monitor_impl(
             unclaimed_count=len(tasks),
             total_unclaimed_count=total_unclaimed_count,
             matching_count=matching_count,
-            history_sample_complete=not poll_errors and total_unclaimed_count is not None,
+            task_distributions=distributions,
+            previously_claimed_count=previously_claimed_count,
+            claim_history_checked_count=sum(
+                1 for task_id in eligible_task_ids if task_id in claim_history_cache
+            ),
+            claim_history_sample_complete=claim_history_sample_complete,
+            history_sample_complete=history_sample_complete,
             search_pages=page_searches,
             next_sleep_seconds=round(delay, 2),
             last_poll=now,
@@ -1744,6 +2315,8 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         task_kind=args.task_kind,
         tag_count_min=tag_count_min,
         tag_count_max=tag_count_max,
+        start_insightful=args.start_insightful,
+        insightful_task_prefix=args.insightful_task_prefix,
         coordination_url=args.coordination_url,
         coordination_token=args.coordination_token,
         coordination_owner=args.coordination_owner,

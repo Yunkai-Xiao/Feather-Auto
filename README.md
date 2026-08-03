@@ -18,6 +18,8 @@ scripted checks and debugging.
 - Stops after a successful claim so one account does not pick up multiple tasks.
 - Can open the claimed task in your existing browser for a Codex-assisted slide
   review pass.
+- Can open Insightful (Workpuls) after a confirmed claim, select the configured
+  HL Grading task, start its timer, and verify the active timer locally.
 - Keeps a local event log and status JSON for debugging.
 - Provides a local dashboard with Start, Stop, campaign selection, cURL paste,
   runtime metrics, current task details, and live log tail.
@@ -270,6 +272,21 @@ The dashboard exposes two main switches:
 - `Claim`
 - `Open task on success`
 
+`Start Insightful after claim` is enabled by default. Its task prefix defaults
+to `HL Grading: Writing`. After Feather confirms the claim, the worker:
+
+1. Refuses to click anything if Insightful is already timing a different task.
+2. Resolves the matching task and parent project from Insightful's local data.
+3. Opens/focuses Insightful, searches the parent project and task, and clicks
+   the purple play button.
+4. Verifies that Insightful created an active timer for the expected project and
+   task IDs.
+
+If automation fails, the Feather claim remains successful and the dashboard
+shows the manual timer reminder with the failure reason. Set
+`INSIGHTFUL_APP_PATH` or `INSIGHTFUL_STORAGE_PATH` only if Insightful is
+installed outside its normal per-user Windows locations.
+
 Behavior by mode:
 
 | Claim | Open | Behavior |
@@ -289,6 +306,21 @@ page, not the total number of tasks considered.
 Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
 campaign. If one exists, it stops without claiming and shows a blocking alert.
+
+Immediately before the claim mutation, the monitor also queries `TaskHistory`
+for the candidate. If any earlier version contains a `COMPLETED` transition,
+that candidate is skipped and the monitor continues to the next task. This
+also protects operators who share one Feather account, where history cannot
+distinguish the people behind the same Feather user identity. A task-history
+timeout also skips the claim and leaves the candidate eligible for a retry on
+the next poll.
+
+In claim mode, the dashboard counts eligible tasks whose history contains
+`IN_PROGRESS` or `COMPLETED`. The latest count appears as **Claimed before**,
+and the 30-minute history chart includes a purple **Claimed-before eligible
+sum** series. Eligible candidate histories are queried once in GraphQL batches
+and the same result is used for the pre-claim safety decision. Non-eligible
+tasks and observe-only mode do not request `TaskHistory`.
 
 Each worker reuses one HTTP session for batch lookup, paginated search, safety
 checks, and claim requests. After a matching task passes the safety checks, the
@@ -444,6 +476,30 @@ For example, `--tag-count-min 4 --tag-count-max 8` means tasks with 4 through 8
 tags can be opened or claimed, while tasks outside that range are ignored.
 `--tag-count 6` is still supported as shorthand for exactly 6 tags.
 
+## Task Distribution History
+
+After each poll, the dashboard permanently records the poll and its task
+observations in `outputs/task_observation_history.sqlite3`. The distribution
+panel shows unique unclaimed and eligible tasks grouped by tag count and by task
+type for the selected time window. Presets include 30 minutes, 1 hour, 2 hours,
+6 hours, 12 hours, 24 hours, 7 days, all retained data, and a custom value in
+minutes, hours, or days. Repeated sightings of the same task remain in the raw
+history but count once in the selected distribution window.
+
+Task types are inferred from the batch
+name and include Aesthetic Ranking, Style Matching, Template Following,
+Template Creation, Content Grading, Design Instruction, Complete the Deck,
+A/B Preferences, and Deck Outlines. Unrecognized batch names appear as
+`Other`.
+
+The panel says `full campaign scan` when every unclaimed task was loaded. For a
+large campaign, the monitor can use its lower-cost matched-batch search; the
+panel then says `partial matched batches scan` and reports how many of the
+campaign's unclaimed tasks were included.
+
+The SQLite observation history and the JSON task-count history have no automatic
+retention cutoff. They are not deleted or replaced by later polls.
+
 ## CLI Usage
 
 Dashboard usage is recommended, but the CLI remains useful for one-off tests.
@@ -470,6 +526,12 @@ Claim the first matching task:
 
 ```powershell
 python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --claim --curl-file my_feather_request.curl.txt
+```
+
+Claim and start the Insightful HL Grading timer:
+
+```powershell
+python -m feather_auto.cli --campaign-id 929712fc-fa2a-45bc-94df-2ae6d445b2ca --batch-regex="Aesthetic" --claim --start-insightful --insightful-task-prefix="HL Grading: Writing" --curl-file my_feather_request.curl.txt
 ```
 
 Claim only tasks with 4 through 8 tags:
