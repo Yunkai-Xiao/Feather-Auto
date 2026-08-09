@@ -285,6 +285,73 @@
         gap: 10px;
       }
 
+      .tag-rules-editor {
+        margin: -2px 0 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-subtle);
+      }
+
+      .tag-rules-editor summary {
+        cursor: pointer;
+        padding: 9px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .tag-rules-help {
+        margin: 0;
+        padding: 0 9px 8px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .tag-rule-grid {
+        display: grid;
+        gap: 6px;
+        padding: 0 9px 9px;
+      }
+
+      .tag-rule-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 62px 62px;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .tag-rule-row.header {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .tag-rule-name {
+        grid-column: 1 / -1;
+        overflow: hidden;
+        font-size: 11px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tag-rule-row input {
+        min-height: 30px;
+        padding: 5px 6px;
+      }
+
+      .profile-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 6px;
+      }
+
+      .profile-grid + .profile-grid {
+        margin-top: 6px;
+      }
+
       .toggle-list {
         display: grid;
         gap: 8px;
@@ -1182,6 +1249,20 @@
             </div>
             <div class="panel-body">
               <div class="field">
+                <label for="profileSelect">Profile</label>
+                <div class="profile-grid">
+                  <select id="profileSelect"><option value="">Unsaved settings</option></select>
+                  <button id="loadProfile" type="button">Load</button>
+                  <button id="deleteProfile" type="button" class="danger">Delete</button>
+                </div>
+                <div class="profile-grid">
+                  <input id="profileName" placeholder="Profile name" />
+                  <button id="saveProfile" type="button">Save</button>
+                </div>
+                <div class="small" id="profileMeta">Profiles stay in this browser; credentials are never saved.</div>
+              </div>
+
+              <div class="field">
                 <label for="reviewMode">Mode</label>
                 <select id="reviewMode">
                   <option value="aesthetic_ranking">Aesthetic Ranking</option>
@@ -1203,13 +1284,13 @@
               </div>
 
               <div class="field">
-                <label for="batchRegex">Batch regex</label>
-                <input id="batchRegex" value="Aesthetic" placeholder="Aesthetic" />
+                <label>Batch mapping check</label>
+                <input id="batchRegex" type="hidden" value="" />
                 <div class="inline-actions">
-                  <button id="testBatchRegex" type="button">Test regex</button>
+                  <button id="testBatchRegex" type="button">Test mappings</button>
                   <span class="small" id="batchRegexTestMeta">not tested</span>
                 </div>
-                <div class="batch-test-result" id="batchRegexTestResult">Not tested.</div>
+                <div class="batch-test-result" id="batchRegexTestResult">Batch regex mappings are configured per task type below.</div>
               </div>
 
               <div class="row">
@@ -1222,6 +1303,24 @@
                   <input id="tagCountMax" type="number" min="0" step="1" value="8" placeholder="Any" />
                 </div>
               </div>
+
+              <details class="tag-rules-editor" open>
+                <summary>Batch → task type → tag rules</summary>
+                <p class="tag-rules-help">A row is active when its Batch regex is filled. Each batch must match exactly one row; unmatched or conflicting batches are skipped. Blank Tag bounds use the global values; filling either bound replaces both. Bounds are inclusive.</p>
+                <div class="tag-rule-grid">
+                  <div class="tag-rule-row header"><span>Batch regex</span><span>Min (&gt;=)</span><span>Max (&lt;=)</span></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Aesthetic Ranking"><span class="tag-rule-name" title="Aesthetic Ranking">Aesthetic Ranking</span><input data-tag-rule-regex value="Aesthetic" placeholder="Batch regex (inactive if blank)" aria-label="Aesthetic Ranking batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Aesthetic Ranking tag min" /><input data-tag-rule-max type="number" min="0" step="1" value="8" placeholder="Any" aria-label="Aesthetic Ranking tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Style Matching"><span class="tag-rule-name" title="Style Matching">Style Matching</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Style Matching batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Style Matching tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Style Matching tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Template Following"><span class="tag-rule-name" title="Template Following">Template Following</span><input data-tag-rule-regex value="Template[ _/-]+Following" placeholder="Batch regex (inactive if blank)" aria-label="Template Following batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Template Following tag min" /><input data-tag-rule-max type="number" min="0" step="1" value="5" placeholder="Any" aria-label="Template Following tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Template Creation"><span class="tag-rule-name" title="Template Creation">Template Creation</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Template Creation batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Template Creation tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Template Creation tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Content Grading"><span class="tag-rule-name" title="Content Grading">Content Grading</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Content Grading batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Content Grading tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Content Grading tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Design Instruction"><span class="tag-rule-name" title="Design Instruction">Design Instruction</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Design Instruction batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Design Instruction tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Design Instruction tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Complete the Deck"><span class="tag-rule-name" title="Complete the Deck">Complete the Deck</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Complete the Deck batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Complete the Deck tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Complete the Deck tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="A/B Preferences"><span class="tag-rule-name" title="A/B Preferences">A/B Preferences</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="A/B Preferences batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="A/B Preferences tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="A/B Preferences tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Deck Outlines"><span class="tag-rule-name" title="Deck Outlines">Deck Outlines</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Deck Outlines batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Deck Outlines tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Deck Outlines tag max" /></div>
+                  <div class="tag-rule-row" data-tag-rule-row data-task-type="Other"><span class="tag-rule-name" title="Other">Other</span><input data-tag-rule-regex placeholder="Batch regex (inactive if blank)" aria-label="Other batch regex" /><input data-tag-rule-min type="number" min="0" step="1" placeholder="Any" aria-label="Other tag min" /><input data-tag-rule-max type="number" min="0" step="1" placeholder="Any" aria-label="Other tag max" /></div>
+                </div>
+              </details>
 
               <div class="row">
                 <div class="field">
@@ -1338,7 +1437,7 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">Task history</h2>
-                <span class="small" id="historyMeta">waiting for first summed interval</span>
+                <span class="small" id="historyMeta">waiting for first unique-task interval</span>
               </div>
               <div class="history-controls">
                 <label for="historyRange" class="small">Range</label>
@@ -1351,21 +1450,21 @@
             </div>
             <div class="history-body">
               <div class="history-legend" aria-hidden="true">
-                <span class="history-key">All unclaimed task sum</span>
-                <span class="history-key matching">Eligible task sum</span>
-                <span class="history-key previously-claimed">Claimed-before eligible sum</span>
+                <span class="history-key">Unique unclaimed tasks</span>
+                <span class="history-key matching">Unique eligible tasks</span>
+                <span class="history-key previously-claimed">Unique claimed-before tasks</span>
               </div>
               <div class="history-chart-wrap">
-                <svg id="historyChart" class="history-chart" viewBox="0 0 900 260" role="img" aria-label="Summed task counts over time"></svg>
+                <svg id="historyChart" class="history-chart" viewBox="0 0 900 260" role="img" aria-label="Unique task counts over time"></svg>
               </div>
               <div class="table-wrap">
                 <table class="history-table">
                   <thead>
                     <tr>
                       <th>Interval</th>
-                      <th>Total sum</th>
-                      <th>Eligible sum</th>
-                      <th>Claimed before sum</th>
+                      <th>Unique total</th>
+                      <th>Unique eligible</th>
+                      <th>Unique claimed before</th>
                       <th>Eligible rate</th>
                       <th>Claimed / eligible</th>
                     </tr>
@@ -1586,6 +1685,7 @@
       let distributionHistorySupported = true;
       let lastDistributionHistorySignature = "";
       let latestHistoricalDistributions = null;
+      const PROFILE_STORAGE_KEY = "feather-monitor-profiles-v1";
 
       const $ = (id) => document.getElementById(id);
 
@@ -1647,14 +1747,54 @@
         return Number.isFinite(parsed) ? parsed : null;
       }
 
+      function normalizeTagRules(value) {
+        const normalized = {};
+        Object.keys(value || {}).sort().forEach((taskType) => {
+          const rule = value[taskType] || {};
+          const batchRegex = String(rule.batch_regex ?? rule.batchRegex ?? "").trim();
+          const min = nullableNumber(rule.min);
+          const max = nullableNumber(rule.max);
+          if (!batchRegex && min == null && max == null) return;
+          normalized[taskType] = {};
+          if (batchRegex) normalized[taskType].batch_regex = batchRegex;
+          if (min != null) normalized[taskType].min = min;
+          if (max != null) normalized[taskType].max = max;
+        });
+        return normalized;
+      }
+
+      function tagRulesFromForm() {
+        const rules = {};
+        document.querySelectorAll("[data-tag-rule-row]").forEach((row) => {
+          const batchRegex = row.querySelector("[data-tag-rule-regex]").value.trim();
+          const min = nullableNumber(row.querySelector("[data-tag-rule-min]").value.trim());
+          const max = nullableNumber(row.querySelector("[data-tag-rule-max]").value.trim());
+          if (!batchRegex && min == null && max == null) return;
+          rules[row.dataset.taskType] = { batch_regex: batchRegex, min, max };
+        });
+        return normalizeTagRules(rules);
+      }
+
+      function combinedMappingRegex(rules) {
+        return Object.values(normalizeTagRules(rules))
+          .map((rule) => rule.batch_regex)
+          .filter(Boolean)
+          .map((pattern) => `(?:${pattern})`)
+          .join("|");
+      }
+
       function currentHistoryFilter(status) {
         const useActiveStatus = Boolean(latest?.running);
         const tagFilter = useActiveStatus ? (status.tag_count_filter || {}) : {};
+        const tagRules = useActiveStatus ? (status.tag_count_rules || {}) : tagRulesFromForm();
         return {
           campaignId: useActiveStatus ? (status.campaign_id || effectiveCampaignId()) : effectiveCampaignId(),
-          batchRegex: useActiveStatus ? (status.batch_regex ?? $("batchRegex").value.trim()) : $("batchRegex").value.trim(),
+          batchRegex: useActiveStatus
+            ? (status.batch_regex ?? combinedMappingRegex(tagRules))
+            : (combinedMappingRegex(tagRules) || $("batchRegex").value.trim()),
           tagMin: nullableNumber(useActiveStatus ? tagFilter.min : $("tagCountMin").value.trim()),
           tagMax: nullableNumber(useActiveStatus ? tagFilter.max : $("tagCountMax").value.trim()),
+          tagRules: normalizeTagRules(tagRules),
         };
       }
 
@@ -1662,7 +1802,8 @@
         const tags = filter.tagMin == null && filter.tagMax == null
           ? "any tags"
           : `${filter.tagMin ?? 0}–${filter.tagMax ?? "∞"} tags`;
-        return `${filter.batchRegex || "all batches"} · ${tags}`;
+        const overrides = Object.keys(filter.tagRules || {}).length;
+        return `${filter.batchRegex || "all batches"} · ${tags}${overrides ? ` · ${overrides} type override${overrides === 1 ? "" : "s"}` : ""}`;
       }
 
       function filteredHistoryRecords(history, status) {
@@ -1678,6 +1819,7 @@
               && String(record.batch_regex || "") === String(filter.batchRegex || "")
               && nullableNumber(record.tag_count_min) === filter.tagMin
               && nullableNumber(record.tag_count_max) === filter.tagMax
+              && JSON.stringify(normalizeTagRules(record.tag_count_rules)) === JSON.stringify(filter.tagRules)
               && Number.isFinite(observedAt)
               && observedAt >= cutoff;
           }),
@@ -1703,8 +1845,8 @@
         setText(
           "historyMeta",
           records.length
-            ? `${records.length} interval${records.length === 1 ? "" : "s"} · sum per ${interval} min · ${historyFilterLabel(filter)}`
-            : `sum per ${interval} min · ${historyFilterLabel(filter)} · waiting for data`,
+            ? `${records.length} interval${records.length === 1 ? "" : "s"} · unique tasks per ${interval} min · ${historyFilterLabel(filter)}`
+            : `unique tasks per ${interval} min · ${historyFilterLabel(filter)} · waiting for data`,
         );
 
         const svg = $("historyChart");
@@ -1768,9 +1910,9 @@
         });
 
         const series = [
-          { key: "total_tasks", color: "#0f766e", label: "All unclaimed sum" },
-          { key: "matching_tasks", color: "#b45309", label: "Eligible sum" },
-          { key: "previously_claimed_tasks", color: "#7c3aed", label: "Claimed-before eligible sum" },
+          { key: "total_tasks", color: "#0f766e", label: "Unique unclaimed tasks" },
+          { key: "matching_tasks", color: "#b45309", label: "Unique eligible tasks" },
+          { key: "previously_claimed_tasks", color: "#7c3aed", label: "Unique claimed-before tasks" },
         ];
         series.forEach((item) => {
           const available = records
@@ -2031,6 +2173,36 @@
         };
       }
 
+      function effectiveTagFilter(task, status) {
+        const fallback = tagFilter(status);
+        const inferredTaskType = task.taskType || taskTypeFromBatchName(task.batch);
+        const statusRules = normalizeTagRules(status.tag_count_rules || {});
+        const rules = latest?.running || Object.keys(statusRules).length ? statusRules : tagRulesFromForm();
+        const mappings = Object.entries(rules).filter(([_taskType, rule]) => rule.batch_regex);
+        let matches = [];
+        try {
+          matches = mappings
+            .filter(([_taskType, rule]) => new RegExp(rule.batch_regex, "i").test(String(task.batch || "")))
+            .map(([taskType]) => taskType);
+        } catch {
+          return { ...fallback, taskType: inferredTaskType, mappingState: "invalid", mappingMatches: [] };
+        }
+        if (mappings.length && matches.length !== 1) {
+          return {
+            ...fallback,
+            taskType: inferredTaskType,
+            mappingState: matches.length ? "ambiguous" : "unmapped",
+            mappingMatches: matches,
+          };
+        }
+        const taskType = matches[0] || inferredTaskType;
+        const rule = rules[taskType];
+        const hasTypeBounds = rule && (rule.min != null || rule.max != null);
+        return rule
+          ? { min: hasTypeBounds ? (rule.min ?? null) : fallback.min, max: hasTypeBounds ? (rule.max ?? null) : fallback.max, taskType, mappingState: matches.length ? "mapped" : "inferred", mappingMatches: matches }
+          : { ...fallback, taskType, mappingState: matches.length ? "mapped" : "inferred", mappingMatches: matches };
+      }
+
       function parseTaskTagsLine(line) {
         const match = line.match(/^TASK_TAGS\s+(\d+)\/(\d+)\s+(\S+)\s+tag_count=(\S+)\s+batch_name=(.*?)\s+title=(.*)$/);
         if (!match) return null;
@@ -2042,6 +2214,7 @@
           tagCount,
           tagLabel: tagCount == null ? match[4] : String(tagCount),
           batch: match[5] || "-",
+          taskType: taskTypeFromBatchName(match[5]),
           title: match[6] || "(untitled)",
         };
       }
@@ -2080,15 +2253,24 @@
           if (state === "found") return { label: "Found", className: "pending", eligible: true };
         }
 
-        const filter = tagFilter(status);
+        const filter = effectiveTagFilter(task, status);
+        if (filter.mappingState === "unmapped") {
+          return { label: "Skipped: batch has no task-type mapping", className: "skipped", eligible: false };
+        }
+        if (filter.mappingState === "ambiguous") {
+          return { label: `Skipped: batch matches ${filter.mappingMatches.join(", ")}`, className: "blocked", eligible: false };
+        }
+        if (filter.mappingState === "invalid") {
+          return { label: "Skipped: invalid batch mapping regex", className: "blocked", eligible: false };
+        }
         if (task.tagCount == null) {
           return { label: "Tag count unknown", className: "pending", eligible: false };
         }
         if (filter.min != null && task.tagCount < filter.min) {
-          return { label: `Skipped: ${task.tagCount} < min ${filter.min}`, className: "skipped", eligible: false };
+          return { label: `Skipped (${filter.taskType}): ${task.tagCount} < min ${filter.min}`, className: "skipped", eligible: false };
         }
         if (filter.max != null && task.tagCount > filter.max) {
-          return { label: `Skipped: ${task.tagCount} > max ${filter.max}`, className: "skipped", eligible: false };
+          return { label: `Skipped (${filter.taskType}): ${task.tagCount} > max ${filter.max}`, className: "skipped", eligible: false };
         }
         return { label: status.claim === false ? "Visible by tag count" : "Eligible by tag count", className: "eligible", eligible: true };
       }
@@ -2413,6 +2595,21 @@
         return matchFirst(text, patterns).replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\^"/g, '"');
       }
 
+      function extractCurlUrl(text) {
+        const urlOption = matchFirst(text, [
+          /(?:^|\s)--url(?:=|\s+)\$?'([^']+)'/is,
+          /(?:^|\s)--url(?:=|\s+)"([^"]+)"/is,
+          /(?:^|\s)--url(?:=|\s+)(\S+)/is,
+        ]);
+        if (urlOption) return urlOption;
+
+        return matchFirst(text, [
+          /^curl(?:\.exe)?\s+\$?'([^']+)'/is,
+          /^curl(?:\.exe)?\s+"([^"]+)"/is,
+          /^curl(?:\.exe)?\s+(\S+)/is,
+        ]);
+      }
+
       function validateCurlText(text) {
         const trimmed = text.trim();
         const campaignId = effectiveCampaignId();
@@ -2423,11 +2620,7 @@
           return { ok: false, empty: true, checks: [] };
         }
 
-        const commandUrl = matchFirst(trimmed, [
-          /^curl\s+\$?'([^']+)'/is,
-          /^curl\s+"([^"]+)"/is,
-          /^curl\s+(\S+)/is,
-        ]);
+        const commandUrl = extractCurlUrl(trimmed);
         add(
           /^https:\/\/feather\.openai\.com\/api\/v2\/tasks\/search(?:[?#].*)?$/i.test(commandUrl),
           "URL is Feather task search.",
@@ -2524,23 +2717,29 @@
           return;
         }
         if (!payload) {
-          result.textContent = "Not tested.";
+          result.textContent = "Batch regex mappings are configured per task type below.";
           return;
         }
 
         const matches = Array.isArray(payload.matches) ? payload.matches : [];
-        result.classList.add(matches.length ? "pass" : "fail");
+        const conflicts = Array.isArray(payload.mapping_conflicts) ? payload.mapping_conflicts : [];
+        result.classList.add(matches.length && !conflicts.length ? "pass" : "fail");
         result.textContent = "";
         const summary = document.createElement("div");
-        summary.textContent = `${payload.match_count || 0}/${payload.active_count || 0} active batches match ${payload.batch_regex || ""}`;
+        summary.textContent = `${payload.match_count || 0}/${payload.active_count || 0} active batches mapped${conflicts.length ? `; ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"}` : ""}`;
         result.appendChild(summary);
-        $("batchRegexTestMeta").textContent = `${payload.match_count || 0} matches`;
-        if (!matches.length) return;
+        $("batchRegexTestMeta").textContent = conflicts.length ? `${conflicts.length} conflicts` : `${payload.match_count || 0} mapped`;
+        if (!matches.length && !conflicts.length) return;
 
         const list = document.createElement("ul");
         for (const match of matches.slice(0, 30)) {
           const item = document.createElement("li");
-          item.textContent = match.name || match.id || "(unnamed batch)";
+          item.textContent = `${match.task_type ? `${match.task_type}: ` : ""}${match.name || match.id || "(unnamed batch)"}`;
+          list.appendChild(item);
+        }
+        for (const conflict of conflicts.slice(0, 10)) {
+          const item = document.createElement("li");
+          item.textContent = `CONFLICT ${conflict.name || conflict.id || "(unnamed batch)"}: ${(conflict.task_types || []).join(", ")}`;
           list.appendChild(item);
         }
         if (matches.length > 30) {
@@ -2552,9 +2751,8 @@
       }
 
       async function testBatchRegex() {
-        const pattern = $("batchRegex").value.trim();
-        if (!pattern) {
-          renderBatchRegexTest(null, "Enter a batch regex before testing.");
+        if (!combinedMappingRegex(tagRulesFromForm())) {
+          renderBatchRegexTest(null, "Add at least one per-task-type Batch regex before testing.");
           return;
         }
         $("batchRegexTestMeta").textContent = "testing...";
@@ -2708,7 +2906,7 @@
           }
           const tagBucket = tagCounts.get(tagKey);
           tagBucket.unclaimed += 1;
-          const typeLabel = taskTypeFromBatchName(task.batch);
+          const typeLabel = effectiveTagFilter(task, status).taskType;
           if (!typeCounts.has(typeLabel)) typeCounts.set(typeLabel, { unclaimed: 0, eligible: 0 });
           const typeBucket = typeCounts.get(typeLabel);
           typeBucket.unclaimed += 1;
@@ -2776,6 +2974,7 @@
           batchRegex: filter.batchRegex,
           tagMin: filter.tagMin,
           tagMax: filter.tagMax,
+          tagRules: filter.tagRules,
           tagTaskType: $("tagDistributionTaskType").value,
           range: range.query,
           lastPoll: status.last_poll,
@@ -2788,6 +2987,7 @@
           batch_regex: filter.batchRegex || "",
           tag_min: filter.tagMin == null ? "" : String(filter.tagMin),
           tag_max: filter.tagMax == null ? "" : String(filter.tagMax),
+          tag_rules: JSON.stringify(filter.tagRules),
           tag_task_type: $("tagDistributionTaskType").value,
           minutes: range.query,
         });
@@ -2925,14 +3125,16 @@
       }
 
       function configFromForm() {
+        const tagCountRules = tagRulesFromForm();
         return {
           curlText: $("curlText").value,
           reviewMode: $("reviewMode").value,
           campaignId: effectiveCampaignId(),
           customCampaignId: $("customCampaignId").value.trim(),
-          batchRegex: $("batchRegex").value.trim(),
+          batchRegex: combinedMappingRegex(tagCountRules) || $("batchRegex").value.trim(),
           tagCountMin: $("tagCountMin").value.trim(),
           tagCountMax: $("tagCountMax").value.trim(),
+          tagCountRules,
           intervalMin: Number($("intervalMin").value),
           intervalMax: Number($("intervalMax").value),
           claim: $("claim").checked,
@@ -2944,7 +3146,140 @@
         };
       }
 
+      function profileConfigFromForm() {
+        const config = configFromForm();
+        delete config.curlText;
+        return config;
+      }
+
+      function readProfiles() {
+        try {
+          const value = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
+          return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+        } catch {
+          return {};
+        }
+      }
+
+      function renderProfiles(selectedName = "") {
+        const profiles = readProfiles();
+        const select = $("profileSelect");
+        select.innerHTML = '<option value="">Unsaved settings</option>';
+        Object.keys(profiles).sort((left, right) => left.localeCompare(right)).forEach((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          select.appendChild(option);
+        });
+        select.value = Object.prototype.hasOwnProperty.call(profiles, selectedName) ? selectedName : "";
+        $("profileMeta").textContent = `${Object.keys(profiles).length} saved locally; credentials are never saved.`;
+      }
+
+      function setTagRulesForm(rules) {
+        const normalized = normalizeTagRules(rules);
+        document.querySelectorAll("[data-tag-rule-row]").forEach((row) => {
+          const rule = normalized[row.dataset.taskType] || {};
+          row.querySelector("[data-tag-rule-regex]").value = rule.batch_regex || "";
+          row.querySelector("[data-tag-rule-min]").value = rule.min ?? "";
+          row.querySelector("[data-tag-rule-max]").value = rule.max ?? "";
+        });
+      }
+
+      function applyProfileConfig(config, name) {
+        if (!config || typeof config !== "object") return;
+        if (config.reviewMode) $("reviewMode").value = config.reviewMode;
+        applyReviewModeDefaults();
+        if (config.campaignId && [...$("campaignId").options].some((option) => option.value === config.campaignId)) {
+          $("campaignId").value = config.campaignId;
+        }
+        $("customCampaignId").value = config.customCampaignId || "";
+        $("tagCountMin").value = config.tagCountMin ?? "";
+        $("tagCountMax").value = config.tagCountMax ?? "";
+        setTagRulesForm(config.tagCountRules || {});
+        $("batchRegex").value = config.batchRegex || "";
+        $("intervalMin").value = config.intervalMin ?? 1.2;
+        $("intervalMax").value = config.intervalMax ?? 3.8;
+        $("insightfulTaskPrefix").value = config.insightfulTaskPrefix || "HL Grading: Writing";
+        ["claim", "openTask", "startInsightful", "autoReview", "allowBackgroundRun"].forEach((id) => {
+          if (Object.prototype.hasOwnProperty.call(config, id)) $(id).checked = Boolean(config[id]);
+        });
+        $("profileName").value = name || "";
+        lastDistributionHistorySignature = "";
+        renderBatchRegexTest(null);
+        renderTaskHistory(latest?.task_history, latest?.status || {}, true);
+        currentCurlValidation();
+      }
+
+      function saveProfile() {
+        const selected = $("profileSelect").value;
+        const name = $("profileName").value.trim() || selected;
+        if (!name) {
+          setMessage("Enter a profile name first.");
+          return;
+        }
+        const profiles = readProfiles();
+        profiles[name] = profileConfigFromForm();
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+        renderProfiles(name);
+        $("profileName").value = name;
+        setMessage(`Profile saved: ${name}`);
+      }
+
+      function loadProfile() {
+        const name = $("profileSelect").value;
+        const config = readProfiles()[name];
+        if (!name || !config) {
+          setMessage("Choose a saved profile first.");
+          return;
+        }
+        applyProfileConfig(config, name);
+        setMessage(`Profile loaded: ${name}`);
+      }
+
+      function deleteProfile() {
+        const name = $("profileSelect").value;
+        if (!name) {
+          setMessage("Choose a saved profile first.");
+          return;
+        }
+        if (!window.confirm(`Delete profile "${name}"?`)) return;
+        const profiles = readProfiles();
+        delete profiles[name];
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+        renderProfiles();
+        $("profileName").value = "";
+        setMessage(`Profile deleted: ${name}`);
+      }
+
+      function mappingValidation() {
+        const rules = tagRulesFromForm();
+        let activeCount = 0;
+        for (const [taskType, rule] of Object.entries(rules)) {
+          if (!rule.batch_regex && (rule.min != null || rule.max != null)) {
+            return { ok: false, message: `${taskType} has Tag bounds but no Batch regex mapping.` };
+          }
+          if (!rule.batch_regex) continue;
+          activeCount += 1;
+          try {
+            new RegExp(rule.batch_regex, "i");
+          } catch (error) {
+            return { ok: false, message: `${taskType} Batch regex is invalid: ${error.message}` };
+          }
+          if (rule.min != null && rule.max != null && rule.max < rule.min) {
+            return { ok: false, message: `${taskType} Tag max must be >= Tag min.` };
+          }
+        }
+        return activeCount
+          ? { ok: true, rules }
+          : { ok: false, message: "Add at least one Batch regex → Task Type mapping." };
+      }
+
       async function start() {
+        const mapping = mappingValidation();
+        if (!mapping.ok) {
+          setMessage(mapping.message);
+          return;
+        }
         const validation = currentCurlValidation();
         if (!validation.ok && !validation.empty) {
           setMessage("Fix the pasted cURL before starting.");
@@ -3022,6 +3357,12 @@
       $("saveGraphqlCurls").addEventListener("click", () => saveGraphqlCurls().catch((error) => setMessage(error.message)));
       $("verifyCredential").addEventListener("click", () => verifyCredential().catch((error) => setMessage(error.message)));
       $("testBatchRegex").addEventListener("click", () => testBatchRegex().catch((error) => renderBatchRegexTest(null, error.message)));
+      $("saveProfile").addEventListener("click", saveProfile);
+      $("loadProfile").addEventListener("click", loadProfile);
+      $("deleteProfile").addEventListener("click", deleteProfile);
+      $("profileSelect").addEventListener("change", () => {
+        $("profileName").value = $("profileSelect").value;
+      });
       $("curlText").addEventListener("input", currentCurlValidation);
       $("batchRegex").addEventListener("input", () => {
         renderBatchRegexTest(null);
@@ -3029,6 +3370,13 @@
       });
       $("tagCountMin").addEventListener("input", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
       $("tagCountMax").addEventListener("input", () => renderTaskHistory(latest?.task_history, latest?.status || {}, true));
+      document.querySelectorAll("[data-tag-rule-regex], [data-tag-rule-min], [data-tag-rule-max]").forEach((input) => {
+        input.addEventListener("input", () => {
+          lastDistributionHistorySignature = "";
+          renderBatchRegexTest(null);
+          renderTaskHistory(latest?.task_history, latest?.status || {}, true);
+        });
+      });
       $("campaignId").addEventListener("change", () => {
         currentCurlValidation();
         renderTaskHistory(latest?.task_history, latest?.status || {}, true);
@@ -3079,6 +3427,7 @@
         stopTitleFlash();
       });
 
+      renderProfiles();
       refresh().catch((error) => setMessage(error.message));
       setInterval(() => sendHeartbeat(), 2000);
       setInterval(() => refresh().catch(() => {}), 1000);

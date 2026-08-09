@@ -24,6 +24,11 @@ from .coordination import (
     default_owner_label,
 )
 from .insightful import DEFAULT_TASK_PREFIX, start_insightful_timer
+from .tag_rules import (
+    effective_tag_count_bounds,
+    normalize_tag_count_rules,
+    resolve_batch_task_type,
+)
 
 
 BASE_URL = "https://feather.openai.com"
@@ -173,6 +178,7 @@ class MonitorConfig:
     task_kind: str | None = None
     tag_count_min: int | None = None
     tag_count_max: int | None = None
+    tag_count_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     start_insightful: bool = False
     insightful_task_prefix: str = DEFAULT_TASK_PREFIX
     coordination_url: str | None = None
@@ -602,24 +608,38 @@ def task_matches_filters(
     allowed_batch_refs: list[dict[str, Any]],
     tag_count_min: int | None,
     tag_count_max: int | None,
+    tag_count_rules: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
+    mapped_task_type, mapping_state, _mapping_matches = resolve_batch_task_type(
+        str(task.get("task_batch_name") or task.get("batch_name") or ""),
+        task_type_label(task),
+        tag_count_rules,
+    )
+    if mapping_state in {"unmapped", "ambiguous"}:
+        return False
+    effective_min, effective_max = effective_tag_count_bounds(
+        mapped_task_type,
+        tag_count_min,
+        tag_count_max,
+        tag_count_rules,
+    )
     if (
         not batch_id
         and not batch_name
         and not batch_regex
         and not allowed_batch_refs
-        and tag_count_min is None
-        and tag_count_max is None
+        and effective_min is None
+        and effective_max is None
     ):
         return True
 
-    if tag_count_min is not None or tag_count_max is not None:
+    if effective_min is not None or effective_max is not None:
         count = task_tag_count(task)
         if count is None:
             return False
-        if tag_count_min is not None and count < tag_count_min:
+        if effective_min is not None and count < effective_min:
             return False
-        if tag_count_max is not None and count > tag_count_max:
+        if effective_max is not None and count > effective_max:
             return False
 
     values = list(nested_values(task))
@@ -694,6 +714,18 @@ def task_type_label(task: dict[str, Any]) -> str:
     )
 
 
+def resolved_task_type_label(
+    task: dict[str, Any],
+    tag_count_rules: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    task_type, _mapping_state, _matches = resolve_batch_task_type(
+        str(task.get("task_batch_name") or task.get("batch_name") or ""),
+        task_type_label(task),
+        tag_count_rules,
+    )
+    return task_type
+
+
 def task_distributions(
     unclaimed_tasks: list[dict[str, Any]],
     eligible_tasks: list[dict[str, Any]],
@@ -701,6 +733,7 @@ def task_distributions(
     total_unclaimed_count: int | None,
     complete: bool,
     source: str,
+    tag_count_rules: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build UI-ready tag-count and batch-derived task-type distributions."""
 
@@ -714,10 +747,10 @@ def task_distributions(
 
     for task in unclaimed_tasks:
         increment(unclaimed_tag_counts, task_tag_count(task))
-        increment(unclaimed_type_counts, task_type_label(task))
+        increment(unclaimed_type_counts, resolved_task_type_label(task, tag_count_rules))
     for task in eligible_tasks:
         increment(eligible_tag_counts, task_tag_count(task))
-        increment(eligible_type_counts, task_type_label(task))
+        increment(eligible_type_counts, resolved_task_type_label(task, tag_count_rules))
 
     tag_keys = sorted(
         set(unclaimed_tag_counts) | set(eligible_tag_counts),
@@ -756,6 +789,8 @@ def task_distributions(
 def task_observation_records(
     unclaimed_tasks: list[dict[str, Any]],
     eligible_tasks: list[dict[str, Any]],
+    tag_count_rules: dict[str, dict[str, Any]] | None = None,
+    claim_history_by_task_id: dict[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the durable, non-secret task fields needed for historical distributions."""
     eligible_ids = {
@@ -774,9 +809,14 @@ def task_observation_records(
             {
                 "task_id": task_id,
                 "tag_count": task_tag_count(task),
-                "task_type": task_type_label(task),
+                "task_type": resolved_task_type_label(task, tag_count_rules),
                 "batch_name": str(task.get("task_batch_name") or task.get("batch_name") or ""),
                 "eligible": task_id in eligible_ids,
+                "previously_claimed": (
+                    claim_history_by_task_id.get(task_id)
+                    if claim_history_by_task_id is not None
+                    else None
+                ),
             }
         )
     return observations
@@ -1405,6 +1445,10 @@ def _run_monitor_impl(
         raise SystemExit("Use --tag-count-max >= 0.")
     if config.tag_count_min is not None and config.tag_count_max is not None and config.tag_count_max < config.tag_count_min:
         raise SystemExit("Use --tag-count-max >= --tag-count-min.")
+    try:
+        tag_count_rules = normalize_tag_count_rules(config.tag_count_rules)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if config.start_insightful and not config.insightful_task_prefix.strip():
         raise SystemExit("Use a non-empty --insightful-task-prefix when --start-insightful is enabled.")
     tag_count_filter = tag_count_filter_payload(config.tag_count_min, config.tag_count_max)
@@ -1419,6 +1463,8 @@ def _run_monitor_impl(
 
     def update_status(**status: Any) -> None:
         status.setdefault("batch_regex", batch_regex)
+        status.setdefault("tag_count_filter", tag_count_filter)
+        status.setdefault("tag_count_rules", tag_count_rules)
         status.setdefault("coordination_enabled", bool(config.coordination_url))
         status.setdefault("credential_account", credential_account)
         if coordination_lease is not None:
@@ -1847,6 +1893,7 @@ def _run_monitor_impl(
                 allowed_batch_refs,
                 config.tag_count_min,
                 config.tag_count_max,
+                tag_count_rules,
             )
         ]
         matching_count = len(matching_tasks)
@@ -1861,6 +1908,7 @@ def _run_monitor_impl(
                 allowed_batch_refs,
                 config.tag_count_min,
                 config.tag_count_max,
+                tag_count_rules,
             )
         ]
         current_task_ids = {
@@ -1944,10 +1992,22 @@ def _run_monitor_impl(
                 and len(distribution_tasks) == total_unclaimed_count
             ),
             source="campaign" if distribution_is_campaign else "matched_batches",
+            tag_count_rules=tag_count_rules,
+        )
+        claim_history_by_task_id = (
+            {
+                task_id: was_previously_claimed(claim_history_cache[task_id])
+                for task_id in eligible_task_ids
+                if task_id in claim_history_cache
+            }
+            if config.claim and claim_history_sample_complete is True
+            else None
         )
         observation_records = task_observation_records(
             distribution_tasks,
             distribution_eligible_tasks,
+            tag_count_rules,
+            claim_history_by_task_id,
         )
         poll_error_fields: dict[str, Any] = {}
         if poll_errors:
@@ -2014,6 +2074,7 @@ def _run_monitor_impl(
                 allowed_batch_refs,
                 config.tag_count_min,
                 config.tag_count_max,
+                tag_count_rules,
             ):
                 continue
 

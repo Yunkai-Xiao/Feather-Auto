@@ -2,12 +2,91 @@ import unittest
 
 from feather_auto.cli import (
     task_distributions,
+    task_matches_filters,
     task_observation_records,
     task_type_from_batch_name,
 )
 
 
 class TaskDistributionTests(unittest.TestCase):
+    def test_task_type_tag_rule_overrides_global_bounds(self) -> None:
+        rules = {
+            "Aesthetic Ranking": {"max": 8},
+            "Template Following": {"max": 5},
+        }
+
+        def matches(batch_name: str, tag_count: int) -> bool:
+            return task_matches_filters(
+                {"task_batch_name": batch_name, "tags": list(range(tag_count))},
+                None,
+                None,
+                None,
+                [],
+                3,
+                10,
+                rules,
+            )
+
+        self.assertTrue(matches("AESTHETIC RANKING: batch", 2))
+        self.assertFalse(matches("AESTHETIC RANKING: batch", 9))
+        self.assertTrue(matches("TEMPLATE FOLLOWING: batch", 5))
+        self.assertFalse(matches("TEMPLATE FOLLOWING: batch", 6))
+        self.assertTrue(matches("STYLE MATCHING: batch", 6))
+        self.assertFalse(matches("STYLE MATCHING: batch", 11))
+
+    def test_batch_regex_mapping_overrides_inference_and_fails_closed_on_conflict(self) -> None:
+        rules = {
+            "Aesthetic Ranking": {"batch_regex": r"SPECIAL[- ]A", "max": 8},
+            "Template Following": {"batch_regex": r"SPECIAL[- ]T", "max": 5},
+        }
+
+        def matches(batch_name: str, tag_count: int, active_rules=rules) -> bool:
+            return task_matches_filters(
+                {"task_batch_name": batch_name, "tags": list(range(tag_count))},
+                None,
+                None,
+                None,
+                [],
+                None,
+                None,
+                active_rules,
+            )
+
+        self.assertTrue(matches("SPECIAL-A batch with an unusual name", 8))
+        self.assertFalse(matches("SPECIAL-A batch with an unusual name", 9))
+        self.assertFalse(matches("TEMPLATE FOLLOWING but not mapped", 4))
+        conflicting = {
+            "Aesthetic Ranking": {"batch_regex": "SPECIAL", "max": 8},
+            "Template Following": {"batch_regex": "SPECIAL", "max": 5},
+        }
+        self.assertFalse(matches("SPECIAL batch", 4, conflicting))
+
+        regex_only_rule = {"Style Matching": {"batch_regex": "STYLE-ONLY"}}
+        self.assertFalse(
+            task_matches_filters(
+                {"task_batch_name": "STYLE-ONLY batch", "tags": [1, 2, 3, 4]},
+                None,
+                None,
+                None,
+                [],
+                None,
+                3,
+                regex_only_rule,
+            )
+        )
+
+        mapped_distribution = task_distributions(
+            [{"id": "task-x", "task_batch_name": "SPECIAL-A odd", "tags": ["one"]}],
+            [],
+            total_unclaimed_count=1,
+            complete=True,
+            source="campaign",
+            tag_count_rules=rules,
+        )
+        types = {item["label"]: item for item in mapped_distribution["task_types"]}
+        self.assertEqual(types["Aesthetic Ranking"]["unclaimed"], 1)
+        self.assertNotIn("Other", types)
+
     def test_task_type_uses_known_phrase_anywhere_in_batch_name(self) -> None:
         cases = {
             "[HIGH PRIORITY - BR] AESTHETIC RANKING: abc": "Aesthetic Ranking",

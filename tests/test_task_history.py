@@ -105,10 +105,24 @@ class TaskHistoryStoreTests(unittest.TestCase):
                 observed_at,
             )
         )
+        self.assertTrue(
+            self.store.record_status(
+                {
+                    **self.status,
+                    "tag_count_rules": {"Template Following": {"max": 5}},
+                    "matching_count": 2,
+                },
+                observed_at,
+            )
+        )
 
         records = self.store.snapshot()["records"]
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 3)
         self.assertNotEqual(records[0]["filter_key"], records[1]["filter_key"])
+        self.assertEqual(
+            records[2]["tag_count_rules"],
+            {"Template Following": {"max": 5}},
+        )
 
     def test_ignores_incomplete_poll_samples(self) -> None:
         recorded = self.store.record_status(

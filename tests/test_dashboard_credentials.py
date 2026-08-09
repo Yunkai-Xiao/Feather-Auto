@@ -7,6 +7,19 @@ from feather_auto import dashboard_server
 
 
 class DashboardCredentialTests(unittest.TestCase):
+    def test_batch_regex_is_derived_from_task_type_mappings(self) -> None:
+        config = {
+            "batchRegex": "legacy-filter",
+            "tagCountRules": {
+                "Aesthetic Ranking": {"batch_regex": "Aesthetic", "max": 8},
+                "Template Following": {"batch_regex": "Template[- ]Following", "max": 5},
+            },
+        }
+
+        regex = dashboard_server.dashboard_batch_regex(config, {})
+
+        self.assertEqual(regex, "(?:Aesthetic)|(?:Template[- ]Following)")
+
     def test_verify_credential_caches_only_the_account_summary(self) -> None:
         session = Mock()
         user = {
@@ -103,6 +116,7 @@ class DashboardCredentialTests(unittest.TestCase):
                     "batch_regex": ["Aesthetic|raw"],
                     "tag_min": [""],
                     "tag_max": ["8"],
+                    "tag_rules": ['{"Template Following":{"max":5}}'],
                     "tag_task_type": ["Complete the Deck"],
                     "minutes": ["60"],
                 }
@@ -114,6 +128,7 @@ class DashboardCredentialTests(unittest.TestCase):
             batch_regex="Aesthetic|raw",
             tag_count_min=None,
             tag_count_max=8,
+            tag_count_rules={"Template Following": {"max": 5}},
             tag_task_type="Complete the Deck",
             range_minutes=60,
         )

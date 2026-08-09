@@ -142,6 +142,34 @@ class TaskObservationStoreTests(unittest.TestCase):
         self.assertEqual(payload["observation_count"], 1)
         self.assertEqual(payload["unique_task_count"], 1)
 
+    def test_history_snapshot_counts_unique_task_ids_per_bucket(self) -> None:
+        first_tasks = [
+            {**self.task("task-1", 7, "Aesthetic Ranking", True), "previously_claimed": True},
+            {**self.task("task-2", 10, "Complete the Deck", False), "previously_claimed": None},
+        ]
+        second_tasks = [
+            {**self.task("task-1", 7, "Aesthetic Ranking", True), "previously_claimed": True},
+            {**self.task("task-3", 4, "Other", True), "previously_claimed": False},
+        ]
+        self.store.record_status(self.status("poll-1", first_tasks), self.base)
+        self.store.record_status(
+            self.status("poll-2", second_tasks),
+            self.base + timedelta(minutes=10),
+        )
+
+        snapshot = self.store.history_snapshot(
+            interval_minutes=30,
+            observed_at=self.base + timedelta(minutes=15),
+        )
+
+        self.assertEqual(snapshot["aggregation"], "unique_tasks")
+        self.assertEqual(len(snapshot["records"]), 1)
+        record = snapshot["records"][0]
+        self.assertEqual(record["sample_count"], 2)
+        self.assertEqual(record["total_tasks"], 3)
+        self.assertEqual(record["matching_tasks"], 2)
+        self.assertEqual(record["previously_claimed_tasks"], 1)
+
     def test_filter_changes_reuse_raw_campaign_history(self) -> None:
         status = self.status(
             "poll-1",
@@ -159,6 +187,32 @@ class TaskObservationStoreTests(unittest.TestCase):
         self.assertEqual(other_filter["poll_count"], 1)
         self.assertEqual(other_filter["unique_task_count"], 1)
         self.assertEqual(other_filter["eligible_count"], 0)
+
+    def test_task_type_rules_recompute_historical_eligibility(self) -> None:
+        tasks = [
+            self.task("task-1", 9, "Aesthetic Ranking", False),
+            self.task("task-2", 6, "Template Following", False),
+            self.task("task-3", 6, "Style Matching", True),
+        ]
+        self.store.record_status(self.status("poll-1", tasks), self.base)
+
+        payload = self.store.distribution(
+            campaign_id="campaign-1",
+            batch_regex="Aesthetic|raw",
+            tag_count_max=10,
+            tag_count_rules={
+                "Aesthetic Ranking": {"max": 8},
+                "Template Following": {"max": 5},
+            },
+            range_minutes=None,
+            observed_at=self.base,
+        )
+
+        self.assertEqual(payload["eligible_count"], 1)
+        types = {item["label"]: item for item in payload["task_types"]}
+        self.assertEqual(types["Aesthetic Ranking"]["eligible"], 0)
+        self.assertEqual(types["Template Following"]["eligible"], 0)
+        self.assertEqual(types["Style Matching"]["eligible"], 1)
 
 
 if __name__ == "__main__":

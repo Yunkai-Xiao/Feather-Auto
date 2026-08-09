@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .tag_rules import effective_tag_count_bounds, normalize_tag_count_rules, resolve_batch_task_type
+
 
 TASK_TYPE_LABELS = (
     "Aesthetic Ranking",
@@ -49,6 +51,7 @@ class TaskHistoryStore:
             "batch_regex": str(status.get("batch_regex") or ""),
             "tag_count_min": tag_filter.get("min"),
             "tag_count_max": tag_filter.get("max"),
+            "tag_count_rules": normalize_tag_count_rules(status.get("tag_count_rules")),
         }
 
     @classmethod
@@ -198,6 +201,8 @@ class TaskObservationStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._lock = threading.RLock()
+        self._history_revision = 0
+        self._history_cache: dict[tuple[int, int | None], tuple[int, dict[str, Any]]] = {}
 
     @staticmethod
     def _observed_at(status: dict[str, Any], observed_at: datetime | None) -> datetime:
@@ -248,6 +253,7 @@ class TaskObservationStore:
                 task_type TEXT NOT NULL,
                 batch_name TEXT NOT NULL,
                 eligible INTEGER NOT NULL,
+                previously_claimed INTEGER,
                 UNIQUE(campaign_id, filter_key, poll_id, task_id)
             );
             CREATE INDEX IF NOT EXISTS idx_poll_samples_range
@@ -260,6 +266,14 @@ class TaskObservationStore:
                 ON task_observations(campaign_id, observed_epoch, task_id);
             """
         )
+        observation_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(task_observations)")
+        }
+        if "previously_claimed" not in observation_columns:
+            connection.execute(
+                "ALTER TABLE task_observations ADD COLUMN previously_claimed INTEGER"
+            )
+            connection.commit()
         return connection
 
     def record_status(self, status: dict[str, Any], observed_at: datetime | None = None) -> bool:
@@ -299,6 +313,12 @@ class TaskObservationStore:
                 tag_count = None if tag_count is None else int(tag_count)
             except (TypeError, ValueError):
                 tag_count = None
+            raw_previously_claimed = observation.get("previously_claimed")
+            previously_claimed = (
+                None
+                if raw_previously_claimed is None
+                else int(raw_previously_claimed is True)
+            )
             rows.append(
                 (
                     poll_id,
@@ -311,6 +331,7 @@ class TaskObservationStore:
                     str(observation.get("task_type") or "Other"),
                     str(observation.get("batch_name") or ""),
                     int(observation.get("eligible") is True),
+                    previously_claimed,
                 )
             )
 
@@ -346,15 +367,157 @@ class TaskObservationStore:
                         """
                         INSERT OR IGNORE INTO task_observations (
                             poll_id, observed_at, observed_epoch, campaign_id, filter_key,
-                            task_id, tag_count, task_type, batch_name, eligible
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            task_id, tag_count, task_type, batch_name, eligible,
+                            previously_claimed
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows,
                     )
                 connection.commit()
-                return cursor.rowcount > 0
+                inserted = cursor.rowcount > 0
+                if inserted:
+                    self._history_revision += 1
+                    self._history_cache.clear()
+                return inserted
             finally:
                 connection.close()
+
+    def history_snapshot(
+        self,
+        *,
+        interval_minutes: int = 30,
+        retention_days: int | None = None,
+        observed_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Count distinct task IDs in each time bucket and saved filter series."""
+        if interval_minutes < 1:
+            raise ValueError("interval_minutes must be >= 1")
+        if retention_days is not None and retention_days < 1:
+            raise ValueError("retention_days must be >= 1 or None")
+
+        now = observed_at or datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
+        interval_seconds = interval_minutes * 60
+        cache_key = (interval_minutes, retention_days)
+        if observed_at is None:
+            with self._lock:
+                cached = self._history_cache.get(cache_key)
+                if cached and cached[0] == self._history_revision:
+                    payload = cached[1]
+                    return {**payload, "records": [dict(record) for record in payload["records"]]}
+        cutoff = None if retention_days is None else now.timestamp() - retention_days * 86400
+        where = ""
+        where_parameters: list[Any] = []
+        if cutoff is not None:
+            where = "WHERE observed_epoch >= ?"
+            where_parameters.append(cutoff)
+
+        poll_rows: list[tuple[Any, ...]] = []
+        task_rows: list[tuple[Any, ...]] = []
+        snapshot_revision = self._history_revision
+        with self._lock:
+            if self.path.exists():
+                connection = self._connect_unlocked()
+                try:
+                    poll_rows = connection.execute(
+                        f"""
+                        SELECT campaign_id, filter_key,
+                               CAST(observed_epoch / ? AS INTEGER) AS bucket_key,
+                               MIN(observed_at), MAX(observed_at), COUNT(*)
+                        FROM poll_samples
+                        {where}
+                        GROUP BY campaign_id, filter_key, bucket_key
+                        """,
+                        [interval_seconds, *where_parameters],
+                    ).fetchall()
+                    task_rows = connection.execute(
+                        f"""
+                        SELECT campaign_id, filter_key,
+                               CAST(observed_epoch / ? AS INTEGER) AS bucket_key,
+                               COUNT(DISTINCT task_id),
+                               COUNT(DISTINCT CASE WHEN eligible = 1 THEN task_id END),
+                               SUM(CASE WHEN previously_claimed IS NOT NULL THEN 1 ELSE 0 END),
+                               COUNT(DISTINCT CASE WHEN previously_claimed = 1 THEN task_id END)
+                        FROM task_observations
+                        {where}
+                        GROUP BY campaign_id, filter_key, bucket_key
+                        """,
+                        [interval_seconds, *where_parameters],
+                    ).fetchall()
+                finally:
+                    connection.close()
+
+        task_counts = {
+            (str(campaign_id), str(filter_key), int(bucket_key)): (
+                int(total_tasks or 0),
+                int(eligible_tasks or 0),
+                int(claim_history_observations or 0),
+                int(previously_claimed_tasks or 0),
+            )
+            for (
+                campaign_id,
+                filter_key,
+                bucket_key,
+                total_tasks,
+                eligible_tasks,
+                claim_history_observations,
+                previously_claimed_tasks,
+            ) in task_rows
+        }
+        records: list[dict[str, Any]] = []
+        for campaign_id, filter_key, bucket_key, first_at, last_at, sample_count in poll_rows:
+            try:
+                filter_fields = json.loads(str(filter_key))
+            except (TypeError, json.JSONDecodeError):
+                filter_fields = {}
+            if not isinstance(filter_fields, dict):
+                filter_fields = {}
+            try:
+                last_datetime = datetime.fromisoformat(str(last_at))
+                bucket_timezone = last_datetime.tzinfo or now.tzinfo
+            except ValueError:
+                bucket_timezone = now.tzinfo
+            total_tasks, eligible_tasks, known_claim_rows, claimed_tasks = task_counts.get(
+                (str(campaign_id), str(filter_key), int(bucket_key)),
+                (0, 0, 0, 0),
+            )
+            records.append(
+                {
+                    "bucket_start": datetime.fromtimestamp(
+                        int(bucket_key) * interval_seconds,
+                        tz=bucket_timezone,
+                    ).isoformat(),
+                    "observed_at": str(last_at),
+                    "first_observed_at": str(first_at),
+                    "campaign_id": str(campaign_id),
+                    "batch_regex": str(filter_fields.get("batch_regex") or ""),
+                    "tag_count_min": filter_fields.get("tag_count_min"),
+                    "tag_count_max": filter_fields.get("tag_count_max"),
+                    "tag_count_rules": normalize_tag_count_rules(
+                        filter_fields.get("tag_count_rules")
+                    ),
+                    "filter_key": str(filter_key),
+                    "total_tasks": total_tasks,
+                    "matching_tasks": eligible_tasks,
+                    "previously_claimed_tasks": claimed_tasks if known_claim_rows else None,
+                    "sample_count": int(sample_count or 0),
+                }
+            )
+        records.sort(key=lambda item: str(item.get("observed_at") or ""))
+        payload = {
+            "version": 1,
+            "aggregation": "unique_tasks",
+            "interval_minutes": interval_minutes,
+            "retention_days": retention_days,
+            "retention": "forever" if retention_days is None else f"{retention_days}_days",
+            "records": records,
+        }
+        if observed_at is None:
+            with self._lock:
+                if snapshot_revision == self._history_revision:
+                    self._history_cache[cache_key] = (snapshot_revision, payload)
+        return {**payload, "records": [dict(record) for record in records]}
 
     def distribution(
         self,
@@ -363,6 +526,7 @@ class TaskObservationStore:
         batch_regex: str = "",
         tag_count_min: int | None = None,
         tag_count_max: int | None = None,
+        tag_count_rules: dict[str, dict[str, Any]] | None = None,
         tag_task_type: str | None = None,
         range_minutes: int | None = 30,
         observed_at: datetime | None = None,
@@ -380,6 +544,7 @@ class TaskObservationStore:
         selected_tag_task_type = str(tag_task_type or "").strip()
         if selected_tag_task_type.lower() == "all":
             selected_tag_task_type = ""
+        normalized_tag_rules = normalize_tag_count_rules(tag_count_rules)
 
         # Raw observations belong to a campaign, not to the monitor filter that
         # happened to be active when they were captured. Filters are applied
@@ -444,17 +609,29 @@ class TaskObservationStore:
         eligible_task_count = 0
         tag_unique_task_count = 0
         for _task_id, tag_count, task_type, batch_name in task_rows:
+            label, mapping_state, _mapping_matches = resolve_batch_task_type(
+                str(batch_name or ""),
+                str(task_type or "Other"),
+                normalized_tag_rules,
+            )
+            effective_min, effective_max = effective_tag_count_bounds(
+                label,
+                tag_count_min,
+                tag_count_max,
+                normalized_tag_rules,
+            )
             eligible = True
+            if mapping_state in {"unmapped", "ambiguous"}:
+                eligible = False
             if batch_pattern and not batch_pattern.search(str(batch_name or "")):
                 eligible = False
-            if tag_count_min is not None and (tag_count is None or tag_count < tag_count_min):
+            if effective_min is not None and (tag_count is None or tag_count < effective_min):
                 eligible = False
-            if tag_count_max is not None and (tag_count is None or tag_count > tag_count_max):
+            if effective_max is not None and (tag_count is None or tag_count > effective_max):
                 eligible = False
             if eligible:
                 eligible_task_count += 1
 
-            label = str(task_type or "Other")
             if label not in type_counts:
                 type_counts[label] = {"label": label, "unclaimed": 0, "eligible": 0}
             type_counts[label]["unclaimed"] += 1

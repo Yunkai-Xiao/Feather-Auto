@@ -37,6 +37,7 @@ from .coordination import default_owner_label, release_saved_lease
 from .insightful import DEFAULT_TASK_PREFIX
 from .review_task_slides import run_review_pipeline
 from .task_history import TaskHistoryStore, TaskObservationStore
+from .tag_rules import normalize_tag_count_rules, resolve_batch_task_type
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -132,6 +133,14 @@ def dashboard_monitor_settings(config: dict[str, Any]) -> tuple[str, dict[str, A
 
 
 def dashboard_batch_regex(config: dict[str, Any], mode_config: dict[str, Any]) -> str:
+    tag_rules = normalize_tag_count_rules(config.get("tagCountRules"))
+    mapping_patterns = [
+        str(rule.get("batch_regex") or "").strip()
+        for rule in tag_rules.values()
+        if str(rule.get("batch_regex") or "").strip()
+    ]
+    if mapping_patterns:
+        return "|".join(f"(?:{pattern})" for pattern in mapping_patterns)
     if "batchRegex" in config and config.get("batchRegex") is not None:
         return str(config.get("batchRegex") or "").strip()
     if "batchSuffix" in config and config.get("batchSuffix") is not None:
@@ -209,6 +218,10 @@ def dashboard_tag_count_bounds(config: dict[str, Any], mode_config: dict[str, An
     if tag_count_min is not None and tag_count_max is not None and tag_count_max < tag_count_min:
         raise ValueError("Tag count max must be >= tag count min.")
     return tag_count_min, tag_count_max
+
+
+def dashboard_tag_count_rules(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return normalize_tag_count_rules(config.get("tagCountRules"))
 
 
 def tail(path: Path, max_lines: int = 260) -> str:
@@ -446,11 +459,6 @@ class MonitorController:
     def _update_status(self, payload: dict[str, Any]) -> None:
         status = dict(payload)
         try:
-            TASK_HISTORY.record_status(status)
-        except OSError as exc:
-            status["history_error"] = str(exc)[:300]
-            self._emit(f"HISTORY_WRITE_FAILED {exc}", flush=True)
-        try:
             TASK_OBSERVATIONS.record_status(status)
         except (OSError, sqlite3.Error) as exc:
             status["observation_history_error"] = str(exc)[:300]
@@ -603,6 +611,7 @@ class MonitorController:
         batch_regex = dashboard_batch_regex(config, mode_config)
         compile_batch_regex(batch_regex)
         tag_count_min, tag_count_max = dashboard_tag_count_bounds(config, mode_config)
+        tag_count_rules = dashboard_tag_count_rules(config)
         interval_min = float(config.get("intervalMin") or 1.2)
         interval_max = float(config.get("intervalMax") or 3.8)
         auto_review = bool(config.get("autoReview", mode_config.get("auto_review", True)))
@@ -632,6 +641,7 @@ class MonitorController:
             open_task=bool(config.get("openTask", True)),
             tag_count_min=tag_count_min,
             tag_count_max=tag_count_max,
+            tag_count_rules=tag_count_rules,
             start_insightful=start_insightful,
             insightful_task_prefix=insightful_task_prefix,
             coordination_url=os.environ.get("FEATHER_COORDINATION_URL"),
@@ -685,6 +695,7 @@ class MonitorController:
                 "claim": monitor_config.claim,
                 "batch_regex": batch_regex,
                 "tag_count_filter": tag_count_filter_payload(tag_count_min, tag_count_max),
+                "tag_count_rules": tag_count_rules,
                 "auto_review": auto_review,
                 "start_insightful": start_insightful,
                 "insightful_task_prefix": insightful_task_prefix,
@@ -784,7 +795,10 @@ class MonitorController:
             "review_modes": REVIEW_MODES,
             "coordination": coordination_settings(),
             "runtime": dashboard_runtime(),
-            "task_history": TASK_HISTORY.snapshot(),
+            "task_history": TASK_OBSERVATIONS.history_snapshot(
+                interval_minutes=TASK_HISTORY.interval_minutes,
+                retention_days=TASK_HISTORY.retention_days,
+            ),
             "status": status,
             "log_tail": tail(LOG_FILE),
             "stderr_tail": last_error,
@@ -876,6 +890,25 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
     finally:
         session.close()
     matches = [batch_ref_summary(ref) for ref in refs if pattern.search(str(ref.get("name") or ""))]
+    tag_rules = dashboard_tag_count_rules(config)
+    mapped_matches: list[dict[str, Any]] = []
+    mapping_conflicts: list[dict[str, Any]] = []
+    if any(rule.get("batch_regex") for rule in tag_rules.values()):
+        matches = []
+        for ref in refs:
+            summary = batch_ref_summary(ref)
+            batch_name = str(ref.get("name") or "")
+            task_type, mapping_state, mapping_types = resolve_batch_task_type(
+                batch_name,
+                "Other",
+                tag_rules,
+            )
+            if mapping_state == "mapped":
+                mapped = {**summary, "task_type": task_type}
+                mapped_matches.append(mapped)
+                matches.append(mapped)
+            elif mapping_state == "ambiguous":
+                mapping_conflicts.append({**summary, "task_types": mapping_types})
     return {
         "ok": True,
         "campaign_id": campaign_id,
@@ -884,6 +917,8 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
         "active_count": len(refs),
         "match_count": len(matches),
         "matches": matches,
+        "mapped_matches": mapped_matches,
+        "mapping_conflicts": mapping_conflicts,
         "credential_account": account,
     }
 
@@ -903,6 +938,10 @@ def distribution_history(query: dict[str, list[str]]) -> dict[str, Any]:
     raw_tag_max = (query.get("tag_max") or [tag_filter.get("max")])[0]
     tag_min = optional_int(raw_tag_min, "Tag count min")
     tag_max = optional_int(raw_tag_max, "Tag count max")
+    raw_tag_rules = (query.get("tag_rules") or [status.get("tag_count_rules")])[0]
+    if isinstance(raw_tag_rules, str):
+        raw_tag_rules = json.loads(raw_tag_rules) if raw_tag_rules.strip() else {}
+    tag_rules = normalize_tag_count_rules(raw_tag_rules)
     tag_task_type = str((query.get("tag_task_type") or [""])[0]).strip() or None
     raw_range = str((query.get("minutes") or ["30"])[0]).strip().lower()
     range_minutes = None if raw_range == "all" else int(raw_range)
@@ -915,6 +954,7 @@ def distribution_history(query: dict[str, list[str]]) -> dict[str, Any]:
             batch_regex=batch_regex,
             tag_count_min=tag_min,
             tag_count_max=tag_max,
+            tag_count_rules=tag_rules,
             tag_task_type=tag_task_type,
             range_minutes=range_minutes,
         ),
