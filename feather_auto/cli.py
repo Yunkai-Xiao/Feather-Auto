@@ -39,7 +39,6 @@ REQUEST_TIMEOUT_SECONDS = 10
 SAFE_REQUEST_RETRIES = 2
 SAFE_REQUEST_RETRY_DELAY_SECONDS = 0.75
 MAX_SEARCH_PAGES = 100
-CAMPAIGN_SEARCH_PAGE_THRESHOLD = 4
 DISTRIBUTION_FULL_SCAN_INTERVAL_SECONDS = 30.0
 TASK_HISTORY_BATCH_SIZE = 25
 Emit = Callable[..., None]
@@ -1714,7 +1713,7 @@ def _run_monitor_impl(
             else:
                 total_unclaimed_count = search_total_count(probe_data)
                 campaign_page_total = search_page_count(probe_data, probe_payload)
-                if campaign_page_total is not None and campaign_page_total < CAMPAIGN_SEARCH_PAGE_THRESHOLD:
+                if campaign_page_total is not None and campaign_page_total <= len(search_payloads):
                     try:
                         if stop_event is None:
                             campaign_pages = poll_all_pages(
@@ -1752,7 +1751,7 @@ def _run_monitor_impl(
                     page_label = "unknown" if campaign_page_total is None else str(campaign_page_total)
                     emit(
                         f"[{now}] search_mode=batch campaign_pages={page_label} "
-                        f"threshold={CAMPAIGN_SEARCH_PAGE_THRESHOLD}",
+                        f"matched_batches={len(search_payloads)}",
                         flush=True,
                     )
 
