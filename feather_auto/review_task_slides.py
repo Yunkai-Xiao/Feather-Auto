@@ -34,7 +34,7 @@ DEFAULT_REVIEW_SPEED = os.environ.get("FEATHER_REVIEW_SPEED", "fast")
 CODEX_EXEC_TIMEOUT_SECONDS = int(os.environ.get("FEATHER_REVIEW_CODEX_TIMEOUT_SECONDS", "1800"))
 DEFAULT_CODEX_WORKERS = max(1, int(os.environ.get("FEATHER_REVIEW_CODEX_WORKERS", "3")))
 DEFAULT_OCR_WORKERS = max(1, int(os.environ.get("FEATHER_REVIEW_OCR_WORKERS", "4")))
-DEFAULT_COMMENTS_PER_DECK = max(1, int(os.environ.get("FEATHER_REVIEW_COMMENTS_PER_DECK", "6")))
+DEFAULT_COMMENTS_PER_DECK = max(1, int(os.environ.get("FEATHER_REVIEW_COMMENTS_PER_DECK", "7")))
 DEFAULT_OCR_BACKEND = os.environ.get("FEATHER_REVIEW_OCR_BACKEND", "paddle")
 DEFAULT_ALLOW_NON_PADDLE_OCR = env_flag("FEATHER_REVIEW_ALLOW_NON_PADDLE_OCR")
 DEFAULT_PADDLEOCR_DEVICE = os.environ.get("FEATHER_REVIEW_PADDLEOCR_DEVICE", "cpu")
@@ -96,34 +96,45 @@ def run_downloader(
     output_dir: Path,
 ) -> dict[str, Any]:
     require_file(curl_file, "task search/auth cURL")
-    require_file(redirect_graphql_curl_file, "TaskOrStagecraftRedirect cURL")
-    require_file(conversation_graphql_curl_file, "FetchConversationWidget cURL")
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
         "-m",
         "feather_auto.download_task_slides",
-        "--api-original",
-        "--task-id",
-        task_id,
-        "--curl-file",
-        str(curl_file),
-        "--redirect-graphql-curl-file",
-        str(redirect_graphql_curl_file),
-        "--conversation-graphql-curl-file",
-        str(conversation_graphql_curl_file),
-        "--output-dir",
-        str(output_dir),
     ]
+    if redirect_graphql_curl_file.exists() and conversation_graphql_curl_file.exists():
+        cmd.extend(
+            [
+                "--api-original",
+                "--redirect-graphql-curl-file",
+                str(redirect_graphql_curl_file),
+                "--conversation-graphql-curl-file",
+                str(conversation_graphql_curl_file),
+            ]
+        )
+        download_mode = "api_original"
+    else:
+        cmd.append("--api")
+        download_mode = "api"
+    cmd.extend(
+        [
+            "--task-id",
+            task_id,
+            "--curl-file",
+            str(curl_file),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
     proc = subprocess.run(cmd, cwd=Path.cwd(), text=True, capture_output=True, check=False)
     (output_dir / "download_stdout.txt").write_text(proc.stdout, encoding="utf-8")
     (output_dir / "download_stderr.txt").write_text(proc.stderr, encoding="utf-8")
     if proc.returncode != 0:
         raise SystemExit(f"slide download failed with exit {proc.returncode}: {proc.stderr or proc.stdout}")
     try:
-        return json.loads(proc.stdout)
+        return {**json.loads(proc.stdout), "download_mode": download_mode}
     except json.JSONDecodeError:
-        return {"stdout": proc.stdout}
+        return {"stdout": proc.stdout, "download_mode": download_mode}
 
 
 def build_slide_manifest(download_results_path: Path, output_dir: Path) -> dict[str, Any]:
@@ -780,6 +791,37 @@ def build_deck_quality_ranking(value: dict[str, Any]) -> list[dict[str, Any]]:
     )
     for index, row in enumerate(ranking, start=1):
         row["rank"] = index
+    return assign_relative_scores(ranking)
+
+
+def relative_score_sequence(deck_count: int) -> list[int]:
+    sequences = {
+        1: [7],
+        2: [7, 1],
+        3: [7, 4, 1],
+        4: [7, 5, 3, 1],
+        5: [7, 6, 4, 2, 1],
+        6: [7, 6, 5, 3, 2, 1],
+        7: [7, 6, 5, 4, 3, 2, 1],
+        8: [7, 6, 5, 4, 4, 3, 2, 1],
+        9: [7, 6, 5, 5, 4, 3, 3, 2, 1],
+        10: [7, 6, 6, 5, 5, 4, 3, 3, 2, 1],
+        11: [7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 1],
+        12: [7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1],
+    }
+    if deck_count <= 0:
+        return []
+    if deck_count in sequences:
+        return sequences[deck_count]
+    middle = [score for score in range(6, 1, -1) for _ in range(2)]
+    return [7, *(middle[index % len(middle)] for index in range(deck_count - 2)), 1]
+
+
+def assign_relative_scores(ranking: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scores = relative_score_sequence(len(ranking))
+    for row, score in zip(ranking, scores):
+        row["score"] = score
+        row["approximate_score"] = score
     return ranking
 
 
@@ -809,7 +851,7 @@ def normalize_deck_quality_ranking(value: Any) -> list[dict[str, Any]]:
         deck = text_value(row.get("deck") or row.get("candidate"))
         if not deck:
             continue
-        score = row.get("approximate_score", row.get("score"))
+        score = row.get("score", row.get("approximate_score"))
         try:
             approximate_score = round(float(score), 1)
         except (TypeError, ValueError):
@@ -818,6 +860,7 @@ def normalize_deck_quality_ranking(value: Any) -> list[dict[str, Any]]:
             {
                 "rank": int(row.get("rank") or index),
                 "deck": deck,
+                "score": approximate_score,
                 "approximate_score": approximate_score,
                 "reason": text_value(row.get("reason") or row.get("rationale")),
                 "issue_count": row.get("issue_count"),
@@ -828,7 +871,7 @@ def normalize_deck_quality_ranking(value: Any) -> list[dict[str, Any]]:
     normalized.sort(key=lambda row: int(row.get("rank") or 999))
     for index, row in enumerate(normalized, start=1):
         row["rank"] = index
-    return normalized
+    return assign_relative_scores(normalized)
 
 
 def compact_deck_texts_for_codex(deck_texts: Any) -> dict[str, Any]:
@@ -862,16 +905,21 @@ def attach_codex_quality_ranking(
     output_dir: Path,
     model: str,
 ) -> dict[str, Any]:
+    deck_count = len(value.get("decks") or {}) if isinstance(value.get("decks"), dict) else 0
+    required_scores = relative_score_sequence(deck_count)
     prompt = (
         "You are ranking multiple candidate slide decks for Content Grading language quality. "
         "Use only the extracted slide text, generated comments, and task prompt below. Do not inspect files, run commands, or use outside knowledge.\n"
-        "Rank decks from strongest language quality to weakest language quality. "
+        "Rank decks from strongest overall content quality to weakest. Evaluate Writing Quality, Organization and Storytelling, "
+        "Comprehensiveness and Substance, and Groundedness and Accuracy. "
         "Consider severity more than raw issue count: broken/truncated/incomplete text and hard-to-understand wording are worse than mild marketing phrasing. "
         "Reward decks that are clear, natural, specific, and easy to follow. Penalize AI-slop filler, vague product language, within-slide repetition, awkward wording, and broken text. "
         + CONTENT_GRADING_REVIEW_RULES
         + " "
+        f"There are {deck_count} responses. Scores in strongest-to-weakest rank order must be {required_scores}; "
+        "the best response must receive the unique 7 and the worst response the unique 1. "
         "Return JSON only with shape "
-        "{\"deck_quality_ranking\":[{\"rank\":1,\"deck\":\"deck_01\",\"approximate_score\":6.0,"
+        "{\"deck_quality_ranking\":[{\"rank\":1,\"deck\":\"deck_01\",\"score\":7,"
         "\"reason\":\"brief reason grounded in slide numbers or comment evidence\"}]}.\n\n"
         "Task prompt:\n"
         + (task_prompt or "(not found)")
@@ -896,10 +944,25 @@ def attach_codex_quality_ranking(
 
 
 def codex_executable() -> str | None:
+    configured = text_value(os.environ.get("FEATHER_REVIEW_CODEX_EXECUTABLE"))
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.is_file():
+            return str(configured_path)
+
+    if os.name == "nt":
+        user_candidates = [
+            Path.home() / ".codex" / ".sandbox-bin" / "codex.exe",
+            Path.home() / ".codex" / "plugins" / ".plugin-appserver" / "codex.exe",
+        ]
+        for path in user_candidates:
+            if path.is_file():
+                return str(path)
+
     candidates = ["codex.cmd", "codex.exe", "codex"] if os.name == "nt" else ["codex"]
     for candidate in candidates:
         path = shutil.which(candidate)
-        if path:
+        if path and not (os.name == "nt" and "\\windowsapps\\" in path.lower()):
             return path
     return None
 
@@ -1330,7 +1393,7 @@ def generate_issue_candidates_codex(
     return result
 
 
-def render_content_grading_markdown(value: Any) -> str:
+def render_content_grading_diagnostic_markdown(value: Any) -> str:
     if not isinstance(value, dict):
         return "# Content Grading Comments\n\n" + text_value(value) + "\n"
 
@@ -1400,6 +1463,20 @@ def render_content_grading_markdown(value: Any) -> str:
             lines.append("- No clear content grading comments.")
             lines.append("")
             continue
+
+        paste_ready = []
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            draft = text_value(comment.get("comment_draft")).lstrip("- ")
+            if draft:
+                paste_ready.append(draft)
+        if paste_ready:
+            lines.append("### Paste-ready rationales")
+            for draft in paste_ready:
+                lines.append(f"- {markdown_bullet(draft)}")
+            lines.append("")
+
         for index, comment in enumerate(comments, start=1):
             if not isinstance(comment, dict):
                 continue
@@ -1423,6 +1500,66 @@ def render_content_grading_markdown(value: Any) -> str:
             if confidence:
                 lines.append(f"- Confidence: {markdown_bullet(confidence)}")
             lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def response_letter(index: int) -> str:
+    value = max(1, index)
+    letters = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def deck_response_label(deck: str, fallback_index: int) -> str:
+    suffix = deck.removeprefix("deck_") if deck.startswith("deck_") else ""
+    return response_letter(int(suffix)) if suffix.isdigit() and int(suffix) > 0 else response_letter(fallback_index)
+
+
+def render_content_grading_markdown(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "# Content Grading Responses\n\n" + text_value(value) + "\n"
+    if isinstance(value.get("raw_model_output"), str):
+        return "# Content Grading Responses\n\n" + value["raw_model_output"].strip() + "\n"
+
+    ranking = (value.get("summary") or {}).get("deck_quality_ranking")
+    score_by_deck: dict[str, int] = {}
+    if isinstance(ranking, list):
+        for row in ranking:
+            if not isinstance(row, dict):
+                continue
+            deck = text_value(row.get("deck"))
+            try:
+                score_by_deck[deck] = int(round(float(row.get("score", row.get("approximate_score")))))
+            except (TypeError, ValueError):
+                continue
+
+    decks = value.get("decks")
+    if not isinstance(decks, dict):
+        return "# Content Grading Responses\n"
+
+    lines = ["# Content Grading Responses", ""]
+    for index, (deck, deck_data) in enumerate(sorted(decks.items()), start=1):
+        label = deck_response_label(deck, index)
+        score = score_by_deck.get(deck)
+        lines.append(f"## {label} — Score {score if score is not None else 'pending'}")
+        lines.append("")
+        lines.append("Brief feedback:")
+        comments = deck_data.get("comments") if isinstance(deck_data, dict) else None
+        drafts = []
+        if isinstance(comments, list):
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                draft = text_value(comment.get("comment_draft")).lstrip("- ")
+                if draft:
+                    drafts.append(draft)
+        if drafts:
+            lines.extend(f"- {markdown_bullet(draft)}" for draft in drafts)
+        else:
+            lines.append("- Feedback is still being generated for this response.")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1481,6 +1618,7 @@ def generate_content_grading_comments(
         parsed = attach_quality_ranking(parsed)
     write_json(output_dir / "content_grading_comments.json", parsed)
     (output_dir / "content_grading_comments.md").write_text(render_content_grading_markdown(parsed), encoding="utf-8")
+    write_final_deck_comment_outputs(output_dir, parsed)
     write_json(output_dir / "llm_raw" / "content_grading_comments_response.json", response)
     return parsed
 
@@ -1586,20 +1724,27 @@ def run_deck_content_grading_comments_codex_fast_job(
         "You are helping a human reviewer do Content Grading for one slide deck. "
         "Use only this deck's extracted OCR text and the task prompt below. Do not inspect files, run commands, or use outside knowledge.\n"
         f"Deck under review: {deck}.\n\n"
-        f"Write one overall assessment and {comment_count} clear, high-signal content comments. "
-        "Focus on sentences or short phrases that are empty, generic, AI-slop-like, filler, vague, repetitive within a single slide, "
-        "self-referential, weakly connected to the requested task, or genuinely unclear. "
+        f"Write exactly {comment_count} robust, submit-ready Brief feedback sentences. "
+        "Evaluate Writing Quality, Organization and Storytelling, Comprehensiveness and Substance, and Groundedness and Accuracy. "
+        "Focus on wording that is formulaic or slogan-like, vague or unsupported, unnecessarily wordy, poorly framed, repetitive within a single slide, "
+        "self-referential, contradictory, weakly connected to the requested task, or genuinely unclear. "
         + CONTENT_GRADING_REVIEW_RULES
         + " "
         "Prefer comments that a reviewer can paste or adapt. Avoid tiny OCR-only noise unless the deck text itself would visibly read broken to a user. "
-        "Every comment must include the slide number, the exact quote/phrase, a critique, an improvement suggestion, and a reviewer-facing comment draft. "
+        "Focus primarily on problems. Only when the deck is clearly excellent may one or two sentences acknowledge a specific strength; "
+        "all remaining sentences should identify meaningful weaknesses. Each comment_draft must be one complete, standalone sentence that can be pasted as its own bullet. "
+        "Every comment_draft must include: the slide number or title; an exact quoted phrase; a named Content Grading criterion; "
+        "the concrete reader impact or reason it matters; and a plain, actionable revision or a specific instruction about what strength to preserve. "
+        "Use criterion names such as Writing Quality, Organization and Storytelling, Comprehensiveness and Substance, Groundedness and Accuracy, "
+        "Formulaic or slogan-like, Claims without evidence, Nonsensical or contradictory, Meaning you cannot recover, More words than needed, or Buries the point. "
+        "Write in third person about the artifact, never in first person, and vary sentence structure across responses. "
         "Preserve quote punctuation from the extracted text when possible; do not normalize clear en or em dashes to '-'. Return JSON only with shape "
         "{\"overall_comment\":\"one concise overall assessment\","
         "\"comments\":[{\"slide\":1,\"issue_type\":\"ai_slop|vague_phrase|generic_claim|"
         "repetition|instruction_following|unclear_content\",\"quote\":\"exact sentence or phrase\","
         "\"critique\":\"why this is weak\",\"suggestion\":\"how to improve it\","
-        "\"comment_draft\":\"reviewer-facing comment in 1-2 sentences\",\"confidence\":\"low|medium|high\"}]}. "
-        f"Return exactly {comment_count} comments unless there are fewer than {comment_count} meaningful content issues.\n\n"
+        "\"comment_draft\":\"one complete submit-ready Brief feedback sentence\",\"confidence\":\"low|medium|high\"}]}. "
+        f"Return exactly {comment_count} comments.\n\n"
         "Task prompt:\n"
         + (task_prompt or "(not found)")
         + "\n\nStructured extracted slide text for this deck:\n"
@@ -1626,6 +1771,25 @@ def write_deck_comment_outputs(output_dir: Path, deck: str, payload: dict[str, A
         render_content_grading_markdown(deck_result),
         encoding="utf-8",
     )
+
+
+def write_final_deck_comment_outputs(output_dir: Path, result: dict[str, Any]) -> None:
+    decks = result.get("decks") if isinstance(result.get("decks"), dict) else {}
+    ranking = (result.get("summary") or {}).get("deck_quality_ranking")
+    ranking = ranking if isinstance(ranking, list) else []
+    for deck, payload in decks.items():
+        if not isinstance(payload, dict):
+            continue
+        deck_ranking = [row for row in ranking if isinstance(row, dict) and text_value(row.get("deck")) == deck]
+        deck_result = {
+            "summary": {"deck_quality_ranking": deck_ranking},
+            "decks": {deck: payload},
+        }
+        write_json(output_dir / "deck_reviews" / f"{raw_name(deck)}_content_grading_comments.json", deck_result)
+        (output_dir / "deck_reviews" / f"{raw_name(deck)}_content_grading_comments.md").write_text(
+            render_content_grading_markdown(deck_result),
+            encoding="utf-8",
+        )
 
 
 def write_slide_comment_outputs(output_dir: Path, deck: str, slide: int, payload: dict[str, Any]) -> None:
@@ -1735,6 +1899,7 @@ def generate_content_grading_comments_codex(
     )
     write_json(output_dir / "content_grading_comments.json", result)
     (output_dir / "content_grading_comments.md").write_text(render_content_grading_markdown(result), encoding="utf-8")
+    write_final_deck_comment_outputs(output_dir, result)
     return result
 
 
@@ -1922,6 +2087,7 @@ def generate_content_grading_comments_codex_fast_streaming(
     )
     write_json(output_dir / "content_grading_comments.json", grading_comments)
     (output_dir / "content_grading_comments.md").write_text(render_content_grading_markdown(grading_comments), encoding="utf-8")
+    write_final_deck_comment_outputs(output_dir, grading_comments)
     return slide_texts, issue_candidates, grading_comments
 
 
@@ -2141,6 +2307,7 @@ def generate_content_grading_comments_codex_streaming(
     )
     write_json(output_dir / "content_grading_comments.json", grading_comments)
     (output_dir / "content_grading_comments.md").write_text(render_content_grading_markdown(grading_comments), encoding="utf-8")
+    write_final_deck_comment_outputs(output_dir, grading_comments)
     return slide_texts, issue_candidates, grading_comments
 
 

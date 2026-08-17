@@ -170,6 +170,8 @@ def write_json(handler: SimpleHTTPRequestHandler, status: int, payload: dict[str
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store, max-age=0")
+    handler.send_header("Pragma", "no-cache")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -261,7 +263,7 @@ def dashboard_runtime() -> dict[str, Any]:
     }
 
 
-def review_output_payload(task_id: str | None = None) -> dict[str, Any]:
+def review_output_payload(task_id: str | None = None, since: float | None = None) -> dict[str, Any]:
     if not task_id:
         status = dashboard_state().get("status") or {}
         task_id = str((status.get("review") or {}).get("task_id") or status.get("task_id") or "").strip()
@@ -286,6 +288,8 @@ def review_output_payload(task_id: str | None = None) -> dict[str, Any]:
         for path in sorted(deck_dir.glob("*_content_grading_comments.md")):
             if "_slide_" in path.name:
                 continue
+            if since is not None and path.stat().st_mtime < since:
+                continue
             deck_files.append(
                 {
                     "name": path.name,
@@ -295,6 +299,8 @@ def review_output_payload(task_id: str | None = None) -> dict[str, Any]:
                 }
             )
         for path in sorted(deck_dir.glob("*_slide_*_content_grading_comments.md")):
+            if since is not None and path.stat().st_mtime < since:
+                continue
             slide_files.append(
                 {
                     "name": path.name,
@@ -303,13 +309,14 @@ def review_output_payload(task_id: str | None = None) -> dict[str, Any]:
                     "text": read_text(path),
                 }
             )
+    combined_visible = combined_path.exists() and (since is None or combined_path.stat().st_mtime >= since)
     return {
         "ok": True,
         "task_id": task_id,
         "output_dir": str(output_dir),
         "combined_path": str(combined_path),
-        "combined_updated_at": combined_path.stat().st_mtime if combined_path.exists() else None,
-        "combined_markdown": read_text(combined_path),
+        "combined_updated_at": combined_path.stat().st_mtime if combined_visible else None,
+        "combined_markdown": read_text(combined_path) if combined_visible else "",
         "deck_files": deck_files,
         "slide_files": slide_files,
     }
@@ -390,6 +397,8 @@ class MonitorController:
         self._lock = threading.RLock()
         self._log_lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._review_thread: threading.Thread | None = None
+        self._review_active_task_id: str | None = None
         self._stop_event = threading.Event()
         self._status: dict[str, Any] = {}
         self._last_error = ""
@@ -478,6 +487,7 @@ class MonitorController:
                 "auto_review",
                 "start_insightful",
                 "insightful_task_prefix",
+                "review",
             ):
                 if key not in status and key in self._status:
                     status[key] = self._status[key]
@@ -507,10 +517,32 @@ class MonitorController:
                 }
 
     def _review_claimed_task(self, task_id: str) -> None:
+        with self._lock:
+            if self._review_active_task_id:
+                self._emit(
+                    f"REVIEW_SKIPPED {task_id} active_task={self._review_active_task_id}",
+                    flush=True,
+                )
+                return
+            self._review_active_task_id = task_id
+            current_review = self._status.get("review") or {}
+            run_started_at = float(current_review.get("run_started_at") or time.time())
+            self._status = {
+                **self._status,
+                "review": {
+                    "state": "starting",
+                    "task_id": task_id,
+                    "output_dir": str(REVIEW_OUTPUT_ROOT / task_id),
+                    "run_started_at": run_started_at,
+                },
+            }
         review_dir = REVIEW_OUTPUT_ROOT / task_id
         def review_status_callback(payload: dict[str, Any]) -> None:
             with self._lock:
-                self._status = {**self._status, "review": payload}
+                self._status = {
+                    **self._status,
+                    "review": {**payload, "run_started_at": run_started_at},
+                }
 
         try:
             self._emit(f"REVIEW_START {task_id}", flush=True)
@@ -526,7 +558,7 @@ class MonitorController:
                     codex_model=os.environ.get("FEATHER_REVIEW_CODEX_MODEL", os.environ.get("FEATHER_REVIEW_MODEL", "gpt-5.5")),
                     codex_workers=int(os.environ.get("FEATHER_REVIEW_CODEX_WORKERS", "3")),
                     ocr_workers=int(os.environ.get("FEATHER_REVIEW_OCR_WORKERS", "4")),
-                    comments_per_deck=int(os.environ.get("FEATHER_REVIEW_COMMENTS_PER_DECK", "6")),
+                    comments_per_deck=int(os.environ.get("FEATHER_REVIEW_COMMENTS_PER_DECK", "7")),
                     ocr_backend="paddle",
                     allow_non_paddle_ocr=False,
                     review_speed=os.environ.get("FEATHER_REVIEW_SPEED", "fast"),
@@ -537,7 +569,10 @@ class MonitorController:
             )
             self._emit("REVIEW_DONE " + json.dumps(result, ensure_ascii=False), flush=True)
             with self._lock:
-                self._status = {**self._status, "review": result}
+                self._status = {
+                    **self._status,
+                    "review": {**result, "run_started_at": run_started_at},
+                }
         except BaseException as exc:
             error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             self._emit(f"REVIEW_FAILED {task_id} {error}", flush=True)
@@ -546,6 +581,7 @@ class MonitorController:
                 "task_id": task_id,
                 "output_dir": str(review_dir),
                 "error": error,
+                "run_started_at": run_started_at,
             }
             write_json_file(review_dir / "review_status.json", failure)
             (review_dir / "content_grading_comments.md").write_text(
@@ -559,6 +595,44 @@ class MonitorController:
                     **self._status,
                     "review": failure,
                 }
+        finally:
+            with self._lock:
+                if self._review_active_task_id == task_id:
+                    self._review_active_task_id = None
+
+    def start_review(self, task_id: str) -> dict[str, Any]:
+        task_id = safe_task_id(task_id)
+        if not CURL_FILE.exists():
+            raise ValueError("Save a Feather task-search cURL before starting the review workflow.")
+
+        with self._lock:
+            if self._review_active_task_id or (self._review_thread and self._review_thread.is_alive()):
+                active_task = self._review_active_task_id or "unknown"
+                raise RuntimeError(f"A review workflow is already running for task {active_task}.")
+            review_dir = REVIEW_OUTPUT_ROOT / task_id
+            self._status = {
+                **self._status,
+                "review": {
+                    "state": "queued",
+                    "task_id": task_id,
+                    "output_dir": str(review_dir),
+                    "run_started_at": time.time(),
+                },
+            }
+            thread = threading.Thread(
+                target=self._review_claimed_task,
+                args=(task_id,),
+                name=f"FeatherReviewWorker-{task_id[:8]}",
+                daemon=True,
+            )
+            self._review_thread = thread
+            thread.start()
+        return {
+            "started": True,
+            "task_id": task_id,
+            "worker_id": thread.ident,
+            "output_dir": str(review_dir),
+        }
 
     def _run(self, config: MonitorConfig, stop_event: threading.Event, auto_review: bool) -> None:
         try:
@@ -779,6 +853,11 @@ class MonitorController:
                 else None
             )
             last_error = self._last_error
+            review_running = bool(
+                self._review_active_task_id
+                or (self._review_thread and self._review_thread.is_alive())
+            )
+            review_worker_id = self._review_thread.ident if self._review_thread else None
             if status.get("campaign_id") and not status.get("campaign_name"):
                 status = {**status, "campaign_name": campaign_name(str(status["campaign_id"]))}
             if not running and status.get("state") in {"starting", "running", "monitoring", "polling", "sleeping", "found", "stopping"}:
@@ -786,6 +865,8 @@ class MonitorController:
 
         return {
             "running": running,
+            "review_running": review_running,
+            "review_worker_id": review_worker_id if review_running else None,
             "pid": None,
             "server_pid": os.getpid(),
             "worker_id": worker_id if running else None,
@@ -827,6 +908,10 @@ def start_monitor(config: dict[str, Any]) -> dict[str, Any]:
 
 def stop_monitor() -> bool:
     return MONITOR.stop()
+
+
+def start_review(task_id: str) -> dict[str, Any]:
+    return MONITOR.start_review(task_id)
 
 
 def heartbeat_monitor(session_id: str) -> dict[str, Any]:
@@ -989,7 +1074,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/review-output"):
             query = parse_qs(urlsplit(self.path).query)
             task_id = (query.get("task_id") or [""])[0]
-            write_json(self, 200, review_output_payload(task_id or None))
+            since_text = (query.get("since") or [""])[0]
+            try:
+                since = float(since_text) if since_text else None
+            except ValueError:
+                write_json(self, 400, {"ok": False, "error": "Invalid review output timestamp."})
+                return
+            write_json(self, 200, review_output_payload(task_id or None, since=since))
+            return
+        if self.path == "/api/review-state":
+            state = dashboard_state()
+            status = state.get("status") or {}
+            write_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "review_running": state.get("review_running", False),
+                    "review_worker_id": state.get("review_worker_id"),
+                    "curl_saved": state.get("curl_saved", False),
+                    "status": {
+                        "task_id": status.get("task_id"),
+                        "review": status.get("review") or {},
+                    },
+                },
+            )
             return
         super().do_GET()
 
@@ -1003,6 +1112,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/stop":
                 stopped = stop_monitor()
                 write_json(self, 200, {"ok": True, "stopped": stopped, "state": dashboard_state()})
+                return
+            if self.path == "/api/start-review":
+                payload = read_json_body(self)
+                task_id = str(payload.get("taskId") or payload.get("task_id") or "").strip()
+                if not task_id:
+                    write_json(self, 400, {"ok": False, "error": "Feather task ID is required."})
+                    return
+                result = start_review(task_id)
+                write_json(self, 200, {"ok": True, **result, "state": dashboard_state()})
                 return
             if self.path == "/api/heartbeat":
                 payload = read_json_body(self)

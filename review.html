@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feather Content Review</title>
+    <style>
+      :root {
+        --ink: #18211f;
+        --muted: #65716d;
+        --paper: #fbfcf8;
+        --surface: #ffffff;
+        --line: #dce2dc;
+        --line-strong: #bfcac2;
+        --green: #176b56;
+        --green-deep: #105443;
+        --green-soft: #e9f3ee;
+        --amber: #aa5c14;
+        --amber-soft: #fff4e5;
+        --red: #b43838;
+        --red-soft: #fff0ef;
+        --navy: #1c2732;
+        --shadow: 0 18px 48px rgba(27, 46, 37, 0.08);
+        --radius: 18px;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: var(--paper);
+      }
+
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; background: var(--paper); }
+      button, input { font: inherit; }
+      button, a { -webkit-tap-highlight-color: transparent; }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        min-height: 68px;
+        padding: 14px clamp(20px, 4vw, 56px);
+        color: #fff;
+        background: var(--navy);
+      }
+
+      .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        color: #fff;
+        background: var(--green);
+        font-size: 17px;
+        font-weight: 800;
+      }
+      .brand-name { font-size: 15px; font-weight: 760; letter-spacing: -0.01em; }
+      .brand-section { color: #aeb9c4; font-size: 12px; }
+      .nav-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 8px 13px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 10px;
+        color: #edf2f5;
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .nav-link:hover { background: rgba(255, 255, 255, 0.08); }
+
+      .page {
+        width: min(1320px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 48px 0 64px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+        gap: 28px;
+        margin-bottom: 28px;
+      }
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      h1 { margin: 0; font-size: clamp(34px, 5vw, 62px); line-height: 0.98; letter-spacing: -0.055em; }
+      .hero-copy { max-width: 710px; margin: 18px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
+      .ready-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 38px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+        white-space: nowrap;
+      }
+      .ready-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #98a39e; }
+      .ready-pill.ready::before { background: #24a06b; box-shadow: 0 0 0 4px rgba(36, 160, 107, 0.12); }
+      .ready-pill.missing::before { background: var(--red); }
+
+      .launch-card {
+        position: relative;
+        overflow: hidden;
+        padding: clamp(22px, 3vw, 34px);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+      .launch-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 5px;
+        background: var(--green);
+      }
+      .launch-label { display: block; margin-bottom: 9px; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+      .launch-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 12px; }
+      .task-input {
+        width: 100%;
+        min-height: 52px;
+        padding: 0 16px;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        outline: none;
+        color: var(--ink);
+        background: #fff;
+        font-size: 15px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+      }
+      .task-input:focus { border-color: var(--green); box-shadow: 0 0 0 4px rgba(23, 107, 86, 0.11); }
+      .run-button {
+        min-height: 52px;
+        padding: 0 22px;
+        border: 0;
+        border-radius: 12px;
+        color: #fff;
+        background: var(--green);
+        font-weight: 780;
+        cursor: pointer;
+      }
+      .run-button:hover:not(:disabled) { background: var(--green-deep); transform: translateY(-1px); }
+      .run-button:disabled { opacity: 0.52; cursor: not-allowed; }
+      .launch-note { min-height: 20px; margin: 11px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+      .launch-note.error { color: var(--red); }
+
+      .workspace { display: grid; grid-template-columns: minmax(340px, 0.78fr) minmax(0, 1.5fr); gap: 18px; margin-top: 18px; }
+      .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+      .card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+      .card-title { margin: 0; font-size: 15px; letter-spacing: -0.01em; }
+      .card-meta { color: var(--muted); font-size: 12px; }
+
+      .pipeline { padding: 8px 20px 20px; }
+      .stage { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; min-height: 68px; padding-top: 16px; }
+      .stage:not(:last-child)::after { content: ""; position: absolute; left: 16px; top: 49px; bottom: -16px; width: 2px; background: var(--line); }
+      .stage-dot { z-index: 1; display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 50%; color: #78847f; background: #fff; font-size: 12px; font-weight: 800; }
+      .stage.complete .stage-dot { border-color: var(--green); color: #fff; background: var(--green); }
+      .stage.complete:not(:last-child)::after { background: var(--green); }
+      .stage.active .stage-dot { border-color: var(--green); color: var(--green); background: var(--green-soft); box-shadow: 0 0 0 5px rgba(23, 107, 86, 0.09); }
+      .stage-name { margin-top: 2px; font-size: 14px; font-weight: 760; }
+      .stage-detail { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+
+      .progress-wrap { margin: 20px; padding: 16px; border-radius: 14px; background: #f4f7f4; }
+      .progress-line { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+      .progress-line strong { color: var(--ink); }
+      .progress-track { height: 8px; margin-top: 11px; overflow: hidden; border-radius: 99px; background: #dce4de; }
+      .progress-bar { width: 0; height: 100%; border-radius: inherit; background: var(--green); transition: width 320ms ease; }
+
+      .result-card { min-width: 0; overflow: hidden; }
+      .result-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .small-button, .download-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 6px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        color: var(--ink);
+        background: #fff;
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 730;
+        cursor: pointer;
+      }
+      .small-button:hover, .download-link:hover { border-color: var(--green); color: var(--green); }
+      .download-link[hidden] { display: none; }
+
+      .deck-tabs { display: flex; gap: 8px; min-height: 52px; padding: 10px 16px; overflow-x: auto; border-bottom: 1px solid var(--line); background: #fafbf9; }
+      .deck-tab { flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: #fff; font-size: 12px; font-weight: 720; cursor: pointer; }
+      .deck-tab.active { border-color: var(--green); color: var(--green); background: var(--green-soft); }
+      .deck-empty { align-self: center; color: var(--muted); font-size: 12px; }
+      .result-output {
+        min-height: 520px;
+        max-height: 720px;
+        margin: 0;
+        padding: 24px;
+        overflow: auto;
+        color: #dce7e2;
+        background: #17201e;
+        font: 13px/1.72 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 18px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--line); }
+      .fact { min-width: 0; padding: 15px 17px; background: var(--surface); }
+      .fact-label { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+      .fact-value { margin-top: 6px; overflow: hidden; font-size: 13px; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+      .state-running { color: var(--amber); }
+      .state-completed { color: var(--green); }
+      .state-failed { color: var(--red); }
+
+      @media (max-width: 900px) {
+        .hero { grid-template-columns: 1fr; align-items: start; }
+        .ready-pill { justify-self: start; }
+        .workspace { grid-template-columns: 1fr; }
+        .result-output { min-height: 420px; }
+      }
+      @media (max-width: 600px) {
+        .topbar { align-items: flex-start; padding: 13px 16px; }
+        .brand-section { display: none; }
+        .page { width: min(100% - 24px, 1320px); padding-top: 30px; }
+        .launch-row { grid-template-columns: 1fr; }
+        .run-button { width: 100%; }
+        .facts { grid-template-columns: 1fr; }
+        .card-head { align-items: flex-start; flex-direction: column; }
+        .result-output { padding: 18px; font-size: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">F</div>
+        <div>
+          <div class="brand-name">Feather Auto</div>
+          <div class="brand-section">Content review workspace</div>
+        </div>
+      </div>
+      <a class="nav-link" href="/dashboard.html">Back to monitor</a>
+    </header>
+
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Claimed task → final review</p>
+          <h1>Review a slide task.</h1>
+          <p class="hero-copy">Paste a claimed Feather task ID. This workspace downloads and groups the slides, runs OCR, writes seven candidate rationales per deck, and assembles the final review.</p>
+        </div>
+        <div class="ready-pill" id="authState">Checking saved Feather session…</div>
+      </section>
+
+      <section class="launch-card" aria-labelledby="taskIdLabel">
+        <label class="launch-label" id="taskIdLabel" for="taskId">Feather task ID</label>
+        <div class="launch-row">
+          <input class="task-input" id="taskId" autocomplete="off" spellcheck="false" placeholder="e7cab677-51cc-49b6-a9ad-08260dc4350f" />
+          <button class="run-button" id="runWorkflow" type="button">Run review workflow</button>
+        </div>
+        <p class="launch-note" id="launchNote">Enter the ID of a task you have already claimed.</p>
+      </section>
+
+      <section class="facts" aria-label="Workflow summary">
+        <div class="fact"><div class="fact-label">Current task</div><div class="fact-value" id="currentTask">—</div></div>
+        <div class="fact"><div class="fact-label">Workflow state</div><div class="fact-value" id="workflowState">Ready</div></div>
+        <div class="fact"><div class="fact-label">Deck outputs</div><div class="fact-value" id="deckCount">0 available</div></div>
+      </section>
+
+      <section class="workspace">
+        <article class="card">
+          <div class="card-head">
+            <h2 class="card-title">Pipeline</h2>
+            <span class="card-meta" id="pipelineMeta">Waiting</span>
+          </div>
+          <div class="pipeline" id="pipeline">
+            <div class="stage" data-step="0"><div class="stage-dot">1</div><div><div class="stage-name">Download slides</div><div class="stage-detail">Fetch the claimed task and its slide assets.</div></div></div>
+            <div class="stage" data-step="1"><div class="stage-dot">2</div><div><div class="stage-name">Identify decks</div><div class="stage-detail">Preserve which slides belong to each deck.</div></div></div>
+            <div class="stage" data-step="2"><div class="stage-dot">3</div><div><div class="stage-name">Extract text</div><div class="stage-detail">Run local PaddleOCR across the slide images.</div></div></div>
+            <div class="stage" data-step="3"><div class="stage-dot">4</div><div><div class="stage-name">Draft rationales</div><div class="stage-detail">Generate seven problem-focused candidates per deck.</div></div></div>
+            <div class="stage" data-step="4"><div class="stage-dot">5</div><div><div class="stage-name">Rank and assemble</div><div class="stage-detail">Compare decks and write the combined Markdown.</div></div></div>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-line"><strong id="progressLabel">Not started</strong><span id="progressValue">0%</span></div>
+            <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+          </div>
+        </article>
+
+        <article class="card result-card">
+          <div class="card-head">
+            <div>
+              <h2 class="card-title">Review result</h2>
+              <div class="card-meta" id="resultMeta">The combined output will appear here as it is written.</div>
+            </div>
+            <div class="result-actions">
+              <button class="small-button" id="copyResult" type="button" disabled>Copy visible</button>
+              <a class="download-link" id="downloadResult" href="#" target="_blank" hidden>Open Markdown</a>
+            </div>
+          </div>
+          <div class="deck-tabs" id="deckTabs"><span class="deck-empty">No deck outputs yet</span></div>
+          <pre class="result-output" id="resultOutput">Waiting for a task ID…</pre>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let latestState = null;
+      let latestOutput = null;
+      let latestOutputSince = 0;
+      let selectedResult = "combined";
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+        return payload;
+      }
+
+      function safeTaskId(value) {
+        return /^[A-Za-z0-9_-]+$/.test(value);
+      }
+
+      function humanize(value) {
+        return String(value || "ready").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+      }
+
+      function stageIndex(review) {
+        const key = `${review.state || ""} ${review.stage || ""}`.toLowerCase();
+        if (key.includes("completed")) return 5;
+        if (key.includes("ranking") || key.includes("quality_ranking")) return 4;
+        if (key.includes("comment") || key.includes("issue_candidate") || key.includes("content_grading")) return 3;
+        if (key.includes("ocr") || key.includes("slide_text") || key.includes("extracting")) return 2;
+        if (key.includes("manifest") || key.includes("deck")) return 1;
+        if (key.includes("download")) return 0;
+        return -1;
+      }
+
+      function renderPipeline(review, running) {
+        const active = stageIndex(review);
+        document.querySelectorAll(".stage").forEach((node) => {
+          const step = Number(node.dataset.step);
+          node.classList.toggle("complete", active === 5 || step < active);
+          node.classList.toggle("active", running && step === Math.max(0, active));
+          node.querySelector(".stage-dot").textContent = active === 5 || step < active ? "✓" : String(step + 1);
+        });
+
+        const completed = Number(review.completed);
+        const total = Number(review.total);
+        let percent = active < 0 ? 0 : Math.min(96, (active + 0.35) * 20);
+        if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+          percent = Math.min(96, active * 20 + (completed / total) * 18);
+        }
+        if (review.state === "completed") percent = 100;
+        $("progressBar").style.width = `${Math.max(0, percent)}%`;
+        $("progressValue").textContent = `${Math.round(percent)}%`;
+        $("progressLabel").textContent = running ? humanize(review.stage || review.state || "Running") : review.state === "completed" ? "Complete" : "Not running";
+        $("pipelineMeta").textContent = Number.isFinite(completed) && Number.isFinite(total) && total > 0 ? `${completed} / ${total}` : humanize(review.state || "waiting");
+      }
+
+      function resultItems(output, since = 0) {
+        const combinedIsCurrent = !since || Number(output.combined_updated_at || 0) >= since;
+        const items = [{ key: "combined", label: "Combined", text: combinedIsCurrent ? (output.combined_markdown || "") : "" }];
+        (output.deck_files || []).filter((file) => !since || Number(file.updated_at || 0) >= since).forEach((file, index) => {
+          items.push({ key: `deck-${index}`, label: file.name.replace("_content_grading_comments.md", "").replaceAll("_", " "), text: file.text || "" });
+        });
+        return items;
+      }
+
+      function renderResults(output, since = latestOutputSince) {
+        latestOutput = output;
+        latestOutputSince = since;
+        const items = resultItems(output, since);
+        const available = items.filter((item) => item.text);
+        if (!items.some((item) => item.key === selectedResult && item.text)) {
+          selectedResult = available[0]?.key || "combined";
+        }
+        $("deckTabs").replaceChildren();
+        if (!available.length) {
+          const empty = document.createElement("span");
+          empty.className = "deck-empty";
+          empty.textContent = "No deck outputs yet";
+          $("deckTabs").append(empty);
+        } else {
+          available.forEach((item) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `deck-tab${item.key === selectedResult ? " active" : ""}`;
+            button.textContent = item.label;
+            button.addEventListener("click", () => { selectedResult = item.key; renderResults(latestOutput, latestOutputSince); });
+            $("deckTabs").append(button);
+          });
+        }
+        const selected = items.find((item) => item.key === selectedResult);
+        const visible = selected?.text || "Workflow output will appear here as each deck completes…";
+        $("resultOutput").textContent = visible;
+        $("copyResult").disabled = !selected?.text;
+        $("deckCount").textContent = `${Math.max(0, items.length - 1)} available`;
+        $("resultMeta").textContent = output.combined_updated_at ? `Updated ${new Date(output.combined_updated_at * 1000).toLocaleTimeString()}` : "The combined output will appear here as it is written.";
+        if (output.task_id && output.combined_markdown) {
+          $("downloadResult").href = `/outputs/content_review/${encodeURIComponent(output.task_id)}/content_grading_comments.md`;
+          $("downloadResult").hidden = false;
+        } else {
+          $("downloadResult").hidden = true;
+        }
+      }
+
+      async function refresh() {
+        try {
+          const state = await api("/api/review-state");
+          latestState = state;
+          $("launchNote").classList.remove("error");
+          const review = state.status?.review || {};
+          const enteredTask = $("taskId").value.trim();
+          const currentTask = state.review_running
+            ? (review.task_id || enteredTask)
+            : (enteredTask || review.task_id || state.status?.task_id);
+          const visibleReview = review.task_id === currentTask ? review : {};
+          const savedRunStartedAt = currentTask ? Number(sessionStorage.getItem(`feather-review-start:${currentTask}`) || 0) : 0;
+          const runStartedAt = Number(visibleReview.run_started_at || savedRunStartedAt || 0);
+          if (!$("taskId").value.trim() && currentTask) $("taskId").value = currentTask;
+          if (state.review_running && currentTask && enteredTask !== currentTask) $("taskId").value = currentTask;
+          $("currentTask").textContent = currentTask || "—";
+          $("workflowState").textContent = humanize(visibleReview.state || (state.review_running ? "running" : "ready"));
+          $("workflowState").className = `fact-value state-${visibleReview.state || "ready"}`;
+          $("runWorkflow").disabled = Boolean(state.review_running) || !state.curl_saved;
+          $("authState").textContent = state.curl_saved ? "Feather session saved" : "Feather session required";
+          $("authState").className = `ready-pill ${state.curl_saved ? "ready" : "missing"}`;
+          if (!state.curl_saved) {
+            $("launchNote").textContent = "Save a Feather task-search cURL on the monitor page before running a review.";
+          } else if (state.review_running) {
+            $("launchNote").textContent = `Running ${humanize(visibleReview.stage || visibleReview.state)} for ${visibleReview.task_id || "this task"}.`;
+          } else if (visibleReview.state === "failed") {
+            $("launchNote").textContent = visibleReview.error || "The workflow failed. Check the task ID and try again.";
+            $("launchNote").classList.add("error");
+          } else if (visibleReview.state === "completed") {
+            $("launchNote").textContent = "Review complete. Choose a deck or copy the combined result.";
+            $("launchNote").classList.remove("error");
+          }
+          renderPipeline(visibleReview, Boolean(state.review_running));
+          const outputQuery = new URLSearchParams();
+          if (currentTask) outputQuery.set("task_id", currentTask);
+          if (runStartedAt) outputQuery.set("since", runStartedAt);
+          const output = await api(`/api/review-output${outputQuery.size ? `?${outputQuery}` : ""}`);
+          renderResults(output, runStartedAt);
+        } catch (error) {
+          $("launchNote").textContent = `Unable to reach Feather Auto: ${error.message}`;
+          $("launchNote").classList.add("error");
+        }
+      }
+
+      async function runWorkflow() {
+        const taskId = $("taskId").value.trim();
+        $("launchNote").classList.remove("error");
+        if (!taskId) {
+          $("launchNote").textContent = "Enter a Feather task ID first.";
+          $("launchNote").classList.add("error");
+          $("taskId").focus();
+          return;
+        }
+        if (!safeTaskId(taskId)) {
+          $("launchNote").textContent = "The task ID contains unsupported characters.";
+          $("launchNote").classList.add("error");
+          $("taskId").focus();
+          return;
+        }
+        $("runWorkflow").disabled = true;
+        $("launchNote").textContent = `Starting review for ${taskId}…`;
+        sessionStorage.setItem(`feather-review-start:${taskId}`, String(Date.now() / 1000));
+        history.replaceState(null, "", `/review.html?task_id=${encodeURIComponent(taskId)}`);
+        try {
+          await api("/api/start-review", { method: "POST", body: JSON.stringify({ taskId }) });
+          selectedResult = "combined";
+          await refresh();
+        } catch (error) {
+          $("launchNote").textContent = error.message;
+          $("launchNote").classList.add("error");
+          $("runWorkflow").disabled = false;
+        }
+      }
+
+      $("runWorkflow").addEventListener("click", runWorkflow);
+      $("taskId").addEventListener("keydown", (event) => { if (event.key === "Enter") runWorkflow(); });
+      $("copyResult").addEventListener("click", async () => {
+        const text = $("resultOutput").textContent;
+        if (!text) return;
+        await navigator.clipboard.writeText(text);
+        const prior = $("copyResult").textContent;
+        $("copyResult").textContent = "Copied";
+        setTimeout(() => { $("copyResult").textContent = prior; }, 1300);
+      });
+
+      const initialTask = new URLSearchParams(location.search).get("task_id");
+      if (initialTask && safeTaskId(initialTask)) $("taskId").value = initialTask;
+      refresh();
+      setInterval(refresh, 2500);
+    </script>
+  </body>
+</html>
