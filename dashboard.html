@@ -762,6 +762,24 @@
         flex-wrap: wrap;
       }
 
+      .top-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 36px;
+        padding: 8px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: var(--radius);
+        color: #f9fafb;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 13px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .top-link:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+
       .distribution-card-filter {
         color: var(--muted);
         font-size: 11px;
@@ -1122,20 +1140,6 @@
         min-height: 0;
       }
 
-      .review-body {
-        padding: 0;
-      }
-
-      .review-output {
-        min-height: 360px;
-        max-height: 520px;
-        overflow: auto;
-        border-radius: 0 0 var(--radius) var(--radius);
-        background: #fbfcfe;
-        color: var(--ink);
-        padding: 12px;
-      }
-
       .log-body {
         padding: 0;
       }
@@ -1218,6 +1222,7 @@
         .action-grid .wide {
           grid-column: auto;
         }
+
       }
     </style>
   </head>
@@ -1235,6 +1240,7 @@
         </div>
         <div class="run-pill"><span class="dot" id="dot"></span><span id="running">stopped</span></div>
         <div class="top-actions">
+          <a class="top-link" href="/review.html">Review workspace</a>
           <button id="refresh">Refresh</button>
           <button id="stop" class="danger">Stop</button>
         </div>
@@ -1628,16 +1634,6 @@
             </div>
           </section>
 
-          <section class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">Review output</h2>
-              <span class="small" id="reviewOutputMeta">-</span>
-            </div>
-            <div class="review-body">
-              <pre class="review-output" id="reviewOutput">Waiting for auto review output...</pre>
-            </div>
-          </section>
-
           <section class="panel log-panel">
             <div class="panel-header">
               <h2 class="panel-title">Debug log</h2>
@@ -1727,11 +1723,6 @@
         } catch {
           // The server-side lease will stop the worker if the dashboard cannot be reached.
         }
-      }
-
-      function unixTimeText(value) {
-        if (!value) return "";
-        return new Date(Number(value) * 1000).toLocaleTimeString();
       }
 
       function ageText(iso) {
@@ -2063,76 +2054,6 @@
         if (insightful.state === "failed") return `failed: ${insightful.error || "manual start required"}`;
         if (insightful.state === "disabled") return "disabled";
         return status.start_insightful ? "waiting for a successful claim" : "off";
-      }
-
-      function reviewProgressMarkdown(status, payload) {
-        const review = status.review || {};
-        const taskId = review.task_id || status.task_id || payload.task_id || "-";
-        const lines = [
-          "# Content Grading Comments",
-          "",
-          `Review is running for task \`${taskId}\`.`,
-          "",
-          "## Live Progress",
-          `- State: ${review.state || "-"}`,
-        ];
-        if (review.stage) lines.push(`- Stage: ${review.stage}`);
-        if (review.completed != null && review.total != null) {
-          lines.push(`- Progress: ${review.completed}/${review.total}`);
-        }
-        if (review.current_deck) lines.push(`- Current deck: ${review.current_deck}`);
-        if (review.current_slide) lines.push(`- Current slide: ${review.current_slide}`);
-        if (review.review_speed) lines.push(`- Review speed: ${review.review_speed}`);
-        if (review.comments_per_deck) lines.push(`- Comments per deck: ${review.comments_per_deck}`);
-        if (review.ocr_backend) lines.push(`- OCR backend: ${review.ocr_backend}`);
-        if (review.ocr_workers) lines.push(`- OCR workers: ${review.ocr_workers}`);
-        if (review.codex_workers) lines.push(`- Codex workers: ${review.codex_workers}`);
-        if (review.elapsed_seconds != null) lines.push(`- Elapsed: ${review.elapsed_seconds}s`);
-        if (review.deck_comment_elapsed_seconds != null) lines.push(`- Latest deck write time: ${review.deck_comment_elapsed_seconds}s`);
-        const deckCount = Array.isArray(payload.deck_files) ? payload.deck_files.length : 0;
-        const slideCount = Array.isArray(payload.slide_files) ? payload.slide_files.length : 0;
-        lines.push(`- Completed slide draft files: ${slideCount}`);
-        lines.push(`- Completed deck comment files: ${deckCount}`);
-        lines.push("");
-        lines.push("Slide drafts appear first; deck-level comments replace them as each deck is merged.");
-        return lines.join("\n");
-      }
-
-      async function refreshReviewOutput(status) {
-        const taskId = status.review?.task_id || status.task_id;
-        if (!taskId) {
-          $("reviewOutput").textContent = "Waiting for a claimed task...";
-          setText("reviewOutputMeta", "no task");
-          return;
-        }
-
-        try {
-          const payload = await api(`/api/review-output?task_id=${encodeURIComponent(taskId)}`);
-          const output = $("reviewOutput");
-          const wasNearBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 24;
-          const deckCount = Array.isArray(payload.deck_files) ? payload.deck_files.length : 0;
-          const slideCount = Array.isArray(payload.slide_files) ? payload.slide_files.length : 0;
-          const combined = payload.combined_markdown || "";
-          const isPlaceholder = combined.includes("Review is running for task") && deckCount === 0;
-          const text = isPlaceholder && status.review
-            ? reviewProgressMarkdown(status, payload)
-            : (combined || reviewProgressMarkdown(status, payload));
-          if (output.textContent !== text) {
-            output.textContent = text;
-            if (wasNearBottom) output.scrollTop = output.scrollHeight;
-          }
-          const updated = unixTimeText(payload.combined_updated_at);
-          const meta = [
-            updated ? `updated ${updated}` : "waiting",
-            `${slideCount} slide draft${slideCount === 1 ? "" : "s"}`,
-            `${deckCount} deck file${deckCount === 1 ? "" : "s"}`,
-            payload.combined_path || "",
-          ].filter(Boolean).join(" | ");
-          setText("reviewOutputMeta", meta);
-        } catch (error) {
-          $("reviewOutput").textContent = `Unable to load review output: ${error.message}`;
-          setText("reviewOutputMeta", "error");
-        }
       }
 
       function batchText(batch) {
@@ -3102,8 +3023,6 @@
           || distributionsFromPoll(pollSnapshot, status),
         );
         renderTaskHistory(latest.task_history, status);
-        await refreshReviewOutput(status);
-
         $("dot").className = `dot ${state}`;
         const pathSummary = compactPathSummary(latest.paths);
         $("paths").textContent = pathSummary.text;

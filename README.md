@@ -193,6 +193,13 @@ python -m feather_auto.review_task_slides `
   --conversation-graphql-curl-file outputs\current_feather_conversation_widget.curl.txt
 ```
 
+The dedicated review workspace exposes this as a manual workflow. Open
+`review.html`, enter the claimed Feather task ID, and select
+**Run review workflow**. The page shows live progress and refreshes the combined
+Markdown result as each deck completes. Only the saved task-search/auth cURL is
+required; when the two optional GraphQL templates are absent, the downloader
+automatically uses the task API fallback.
+
 The review pipeline downloads the slide images, extracts visible slide
 sentences and phrases with local PaddleOCR by default, flags vague or
 AI-slop-like content, and writes reviewer notes with critique plus improvement
@@ -240,7 +247,7 @@ per-slide Codex drafts; that mode is much slower. Set `--codex-workers N` or
 `--ocr-workers N` or `FEATHER_REVIEW_OCR_WORKERS=N` to control parallel
 PaddleOCR workers in fast mode. Codex workers default to `3`; OCR workers
 default to `4`. Fast mode requests
-six comments per deck by default; override it with `--comments-per-deck N` or
+seven comments per deck by default; override it with `--comments-per-deck N` or
 `FEATHER_REVIEW_COMMENTS_PER_DECK=N`.
 
 Review output is streamed to disk as it progresses. Per-deck comment drafts are
@@ -252,6 +259,9 @@ outputs/content_review/<task-id>/deck_reviews/
 
 The combined `content_grading_comments.md` is refreshed as each deck finishes,
 then receives a final cross-deck quality ranking from strongest to weakest.
+Each response is rendered as `## A — Score 7` followed by **Brief feedback**
+with seven complete, paste-ready rationale sentences, each on its own line
+beginning with `-`.
 
 The dashboard's `Auto review after claim` switch runs the same pipeline after a
 successful claim. It only writes local helper files; it does not submit or edit
