@@ -84,9 +84,8 @@ class ConnectionReuseAndFastClaimTests(unittest.TestCase):
         response = FakeResponse(
             {
                 "data": {
-                    "updateTaskStatus": {
+                    "stagecraftClaimStage": {
                         "id": "task-1",
-                        "workflowStatus": "in_progress",
                     }
                 }
             }
@@ -113,6 +112,128 @@ class ConnectionReuseAndFastClaimTests(unittest.TestCase):
         claim_task.assert_called_once_with({}, "task-1", session=session)
         current_user.assert_not_called()
         verify_task_assignment.assert_not_called()
+
+    def test_claim_payload_uses_current_stagecraft_operation(self) -> None:
+        self.assertEqual(
+            cli.claim_payload("task-1"),
+            [
+                {
+                    "operationName": "StagecraftClaimStage",
+                    "variables": {"taskId": "task-1", "stageKey": "task"},
+                    "query": cli.STAGECRAFT_CLAIM_STAGE_QUERY,
+                }
+            ],
+        )
+
+    def test_stagecraft_search_response_is_normalized_for_existing_filters(self) -> None:
+        body = [
+            {
+                "data": {
+                    "stagecraftSearch": {
+                        "results": [
+                            {
+                                "task": {
+                                    "id": "task-1",
+                                    "title": "Slide task",
+                                    "statusUpdatedAt": "2026-08-19T03:01:38Z",
+                                    "tags": ["one", "two"],
+                                    "stagecraftTaskStatus": "CLAIMABLE",
+                                    "isTemplateTask": False,
+                                    "taskBatchName": "AESTHETIC RANKING: sample",
+                                },
+                                "stage": {"key": "task", "label": "Task"},
+                                "previousStageLabels": [],
+                                "claimedAt": None,
+                                "completedAt": None,
+                            }
+                        ],
+                        "nextCursor": "cursor-2",
+                    }
+                }
+            }
+        ]
+        payload = {
+            "_search_api": "stagecraft",
+            "campaign_id": "campaign",
+            "task_batch_id": None,
+            "page_size": 20,
+            "cursor": None,
+        }
+
+        normalized = cli.normalize_stagecraft_search_response(body, payload)
+
+        self.assertEqual(normalized["tasks"][0]["id"], "task-1")
+        self.assertEqual(normalized["tasks"][0]["task_batch_name"], "AESTHETIC RANKING: sample")
+        self.assertEqual(normalized["tasks"][0]["kind"], "widget-layout")
+        self.assertEqual(normalized["pagination"]["next_cursor"], "cursor-2")
+        self.assertNotIn("count", normalized["pagination"])
+
+    def test_stagecraft_search_restores_batch_metadata_from_task_detail(self) -> None:
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "tasks": [
+                {
+                    "id": "task-1",
+                    "task_batch_id": "batch-1",
+                    "task_batch_name": "STYLE MATCHING: sample",
+                    "kind": "widget-layout",
+                }
+            ]
+        }
+        data = {
+            "tasks": [
+                {
+                    "id": "task-1",
+                    "task_batch_name": None,
+                    "tags": ["one"],
+                    "kind": "widget-layout",
+                }
+            ],
+            "pagination": {"search_api": "stagecraft"},
+        }
+
+        with patch.object(cli, "request_with_retries", return_value=response) as request:
+            enriched = cli.enrich_stagecraft_search_tasks(
+                data,
+                {"header": "value"},
+                "campaign",
+                session=Mock(),
+            )
+
+        self.assertEqual(enriched["tasks"][0]["task_batch_id"], "batch-1")
+        self.assertEqual(enriched["tasks"][0]["task_batch_name"], "STYLE MATCHING: sample")
+        sent_payload = request.call_args.kwargs["data"]
+        self.assertIn('"query":"task-1"', sent_payload)
+        self.assertIn('"workflow_statuses":["unclaimed","in_progress"', sent_payload)
+
+    def test_stagecraft_search_drops_raced_task_when_batch_metadata_is_unavailable(self) -> None:
+        response = Mock(status_code=200)
+        response.json.return_value = {"tasks": []}
+        data = {
+            "tasks": [{"id": "task-1", "task_batch_name": None}],
+            "pagination": {"search_api": "stagecraft"},
+        }
+
+        with patch.object(cli, "request_with_retries", return_value=response):
+            enriched = cli.enrich_stagecraft_search_tasks(data, {}, "campaign")
+
+        self.assertEqual(enriched["tasks"], [])
+        self.assertEqual(enriched["metadata_lookup_missing_task_ids"], ["task-1"])
+
+    def test_headers_can_follow_metadata_from_fresh_browser_curl(self) -> None:
+        headers = cli.build_headers(
+            "cookie",
+            "campaign",
+            cli.task_stage_url("task-1"),
+            task_id="task-1",
+            task_kind="widget-layout",
+            client_git_hash="fresh-hash",
+            user_agent="fresh-agent",
+        )
+
+        self.assertEqual(headers["referer"], "https://feather.openai.com/tasks/task-1/stage/task")
+        self.assertEqual(headers["x-feather-client-git-hash"], "fresh-hash")
+        self.assertEqual(headers["user-agent"], "fresh-agent")
 
     def test_claim_runs_before_found_log_status_and_artifact_write(self) -> None:
         task = {"id": "task-1", "title": "Fast task", "tags": []}

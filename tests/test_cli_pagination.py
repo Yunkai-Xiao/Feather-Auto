@@ -37,6 +37,33 @@ class PollAllPagesTests(unittest.TestCase):
         self.assertEqual(result, responses)
         self.assertEqual(poll.call_count, 2)
 
+    def test_follows_stagecraft_next_cursor_without_mutating_payload(self) -> None:
+        payload = {
+            "_search_api": "stagecraft",
+            "campaign_id": "campaign",
+            "page_size": 2,
+            "cursor": None,
+        }
+        responses = [
+            {
+                "tasks": [{"id": "1"}, {"id": "2"}],
+                "pagination": {"page_size": 2, "next_cursor": "cursor-2"},
+            },
+            {
+                "tasks": [{"id": "3"}],
+                "pagination": {"page_size": 2, "cursor": "cursor-2", "next_cursor": None},
+            },
+        ]
+
+        with patch("feather_auto.cli.poll_once", side_effect=responses) as poll:
+            result = poll_all_pages({}, payload)
+
+        self.assertEqual(result, responses)
+        self.assertEqual(poll.call_count, 2)
+        self.assertIsNone(poll.call_args_list[0].args[1]["cursor"])
+        self.assertEqual(poll.call_args_list[1].args[1]["cursor"], "cursor-2")
+        self.assertIsNone(payload["cursor"])
+
     def test_in_progress_guard_checks_later_pages(self) -> None:
         responses = [
             {

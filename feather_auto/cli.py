@@ -33,8 +33,9 @@ from .tag_rules import (
 
 BASE_URL = "https://feather.openai.com"
 SEARCH_URL = f"{BASE_URL}/api/v2/tasks/search"
+GRAPHQL_URL = f"{BASE_URL}/api/graphql"
 WHOAMI_URL = f"{BASE_URL}/api/v2/users/whoami"
-CLIENT_GIT_HASH = "befa13b162c"
+CLIENT_GIT_HASH = "37d9a5642ed"
 REQUEST_TIMEOUT_SECONDS = 10
 SAFE_REQUEST_RETRIES = 2
 SAFE_REQUEST_RETRY_DELAY_SECONDS = 0.75
@@ -68,23 +69,80 @@ TASK_TYPE_PATTERNS = (
     ("Deck Outlines", re.compile(r"\bDECK\s+OUTLINES?\b", re.I)),
 )
 
-UPDATE_TASK_STATUS_QUERY = """
-mutation UpdateTaskStatus($taskId: UUID!, $status: TaskStatus!, $skipFormVersionIds: [UUID!]) {
-  updateTaskStatus(
-    taskId: $taskId
-    status: $status
-    skipFormVersionIds: $skipFormVersionIds
-  ) {
+STAGECRAFT_CLAIM_STAGE_QUERY = """
+mutation StagecraftClaimStage($taskId: UUID!, $stageKey: String!) {
+  stagecraftClaimStage(taskId: $taskId, stageKey: $stageKey) {
     id
-    version
-    workflowStatus
-    screenerResult {
-      passed
+    __typename
+  }
+}
+""".strip()
+
+STAGECRAFT_SEARCH_QUERY = """
+query StagecraftSearch(
+  $filter: StagecraftStageSearchFilter!
+  $pageSize: Int!
+  $taskBatchId: UUID
+  $taskBatchStatus: TaskBatchStatus
+  $campaignId: UUID
+  $cursor: String
+  $query: String
+  $stageKeys: [String!]
+  $tags: [String!]
+  $excludeTags: [String!]
+  $tagsSearchType: StageSearchTagsSearchType
+  $includeStageOptions: Boolean! = true
+) {
+  stagecraftSearch(
+    filter: $filter
+    pageSize: $pageSize
+    taskBatchId: $taskBatchId
+    taskBatchStatus: $taskBatchStatus
+    campaignId: $campaignId
+    cursor: $cursor
+    query: $query
+    stageKeys: $stageKeys
+    tags: $tags
+    excludeTags: $excludeTags
+    tagsSearchType: $tagsSearchType
+  ) {
+    results {
+      task {
+        id
+        title
+        statusUpdatedAt
+        tags
+        stagecraftTaskStatus
+        isTemplateTask
+        taskBatchName
+        __typename
+      }
+      stage {
+        key
+        label
+        reopenedInfo {
+          reopenedByStageLabel
+          reopenedIterationCount
+          reopenedAt
+          __typename
+        }
+        __typename
+      }
+      previousStageLabels
+      mostRecentlyDecidedStageLabel
+      mostRecentlyDecidedStageOwner {
+        id
+        email
+        __typename
+      }
+      claimedAt
+      completedAt
       __typename
     }
-    targetStatusTransitions {
-      endStatus
-      intent
+    nextCursor
+    stageOptions @include(if: $includeStageOptions) {
+      key
+      label
       __typename
     }
     __typename
@@ -351,6 +409,39 @@ def default_search_payload(campaign_id: str, page_size: int) -> dict[str, Any]:
     }
 
 
+def stagecraft_search_payload(
+    campaign_id: str,
+    page_size: int,
+    copied: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the internal representation of the current cursor-based search."""
+    source = copied if isinstance(copied, dict) else {}
+    tags_search_type = str(
+        source.get("tagsSearchType") or source.get("tags_search_type") or "ALL"
+    ).upper()
+    if tags_search_type not in {"ALL", "ANY"}:
+        tags_search_type = "ALL"
+    return {
+        "_search_api": "stagecraft",
+        "filter": "CLAIMABLE",
+        "page_size": page_size,
+        "campaign_id": campaign_id or source.get("campaignId") or source.get("campaign_id"),
+        "task_batch_id": source.get("taskBatchId") or source.get("task_batch_id"),
+        "task_batch_status": source.get("taskBatchStatus") or source.get("task_batch_status"),
+        "cursor": None,
+        "query": source.get("query") or "",
+        "stage_keys": source.get("stageKeys") or source.get("stage_keys") or [],
+        "tags": source.get("tags") or [],
+        "exclude_tags": source.get("excludeTags") or source.get("exclude_tags") or [],
+        "tags_search_type": tags_search_type,
+        "include_stage_options": False,
+    }
+
+
+def is_stagecraft_search_payload(payload: dict[str, Any]) -> bool:
+    return payload.get("_search_api") == "stagecraft"
+
+
 def request_parts_from_curl(curl_text: str, campaign_id: str, page_size: int) -> tuple[str, dict[str, Any]]:
     cookie = cookie_value_from_curl(curl_text) or os.environ.get("FEATHER_COOKIE")
     if not cookie:
@@ -358,36 +449,53 @@ def request_parts_from_curl(curl_text: str, campaign_id: str, page_size: int) ->
 
     raw_body = option_value(curl_text, "--data-raw")
     if not raw_body:
-        return cookie, default_search_payload(campaign_id, page_size)
+        return cookie, stagecraft_search_payload(campaign_id, page_size)
 
     try:
         copied_payload = json.loads(raw_body)
     except json.JSONDecodeError:
-        return cookie, default_search_payload(campaign_id, page_size)
+        return cookie, stagecraft_search_payload(campaign_id, page_size)
+
+    if isinstance(copied_payload, list):
+        for operation in copied_payload:
+            if not isinstance(operation, dict) or operation.get("operationName") != "StagecraftSearch":
+                continue
+            variables = operation.get("variables")
+            return cookie, stagecraft_search_payload(
+                campaign_id,
+                page_size,
+                variables if isinstance(variables, dict) else None,
+            )
 
     if isinstance(copied_payload, dict) and copied_payload.get("campaign_id"):
-        copied_payload["campaign_id"] = campaign_id or copied_payload["campaign_id"]
-        copied_payload["page"] = 0
-        copied_payload["page_size"] = page_size
-        copied_payload["workflow_statuses"] = ["unclaimed"]
-        return cookie, copied_payload
+        return cookie, stagecraft_search_payload(campaign_id, page_size, copied_payload)
 
-    return cookie, default_search_payload(campaign_id, page_size)
+    return cookie, stagecraft_search_payload(campaign_id, page_size)
 
 
-def build_headers(cookie: str, campaign_id: str, referer: str, task_id: str | None = None, task_kind: str | None = None) -> dict[str, str]:
+def build_headers(
+    cookie: str,
+    campaign_id: str,
+    referer: str,
+    task_id: str | None = None,
+    task_kind: str | None = None,
+    *,
+    client_git_hash: str | None = None,
+    user_agent: str | None = None,
+) -> dict[str, str]:
     headers = {
         "accept": "*/*",
         "content-type": "application/json",
         "origin": BASE_URL,
         "referer": referer,
-        "user-agent": (
+        "user-agent": user_agent
+        or (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/149.0.0.0 Safari/537.36"
+            "Chrome/151.0.0.0 Safari/537.36"
         ),
         "x-feather-client-campaign-id": campaign_id,
-        "x-feather-client-git-hash": CLIENT_GIT_HASH,
+        "x-feather-client-git-hash": client_git_hash or CLIENT_GIT_HASH,
         "cookie": cookie,
     }
     if task_id:
@@ -844,22 +952,219 @@ def task_url(task_id: str) -> str:
     return f"{BASE_URL}/tasks/{task_id}"
 
 
+def task_stage_url(task_id: str) -> str:
+    return f"{task_url(task_id)}/stage/task"
+
+
+def stagecraft_search_request_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    tags_search_type = str(payload.get("tags_search_type") or "ALL").upper()
+    if tags_search_type not in {"ALL", "ANY"}:
+        tags_search_type = "ALL"
+    variables: dict[str, Any] = {
+        "filter": payload.get("filter") or "CLAIMABLE",
+        "pageSize": int(payload.get("page_size") or 20),
+        "campaignId": payload.get("campaign_id"),
+        "tagsSearchType": tags_search_type,
+        "includeStageOptions": bool(payload.get("include_stage_options", False)),
+    }
+    optional_variables = {
+        "taskBatchId": payload.get("task_batch_id"),
+        "taskBatchStatus": payload.get("task_batch_status"),
+        "cursor": payload.get("cursor"),
+        "query": payload.get("query"),
+        "stageKeys": payload.get("stage_keys"),
+        "tags": payload.get("tags"),
+        "excludeTags": payload.get("exclude_tags"),
+    }
+    variables.update(
+        (key, value)
+        for key, value in optional_variables.items()
+        if value not in (None, "", [])
+    )
+    return [
+        {
+            "operationName": "StagecraftSearch",
+            "variables": variables,
+            "query": STAGECRAFT_SEARCH_QUERY,
+        }
+    ]
+
+
+def normalize_stagecraft_search_response(body: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    first = body[0] if isinstance(body, list) and body else body
+    if not isinstance(first, dict):
+        raise RuntimeError("StagecraftSearch returned an invalid GraphQL response.")
+    if first.get("errors"):
+        preview = json.dumps(first["errors"], ensure_ascii=False, separators=(",", ":"))[:1200]
+        raise RuntimeError(f"StagecraftSearch GraphQL error: {preview}")
+    data = first.get("data")
+    search = data.get("stagecraftSearch") if isinstance(data, dict) else None
+    if not isinstance(search, dict):
+        raise RuntimeError("StagecraftSearch response did not contain stagecraftSearch data.")
+
+    raw_results = search.get("results")
+    results = raw_results if isinstance(raw_results, list) else []
+    tasks: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        raw_task = result.get("task")
+        if not isinstance(raw_task, dict) or not raw_task.get("id"):
+            continue
+        stage = result.get("stage") if isinstance(result.get("stage"), dict) else {}
+        owner = (
+            result.get("mostRecentlyDecidedStageOwner")
+            if isinstance(result.get("mostRecentlyDecidedStageOwner"), dict)
+            else {}
+        )
+        title = raw_task.get("title") or "Temporary empty task title"
+        tasks.append(
+            {
+                "id": raw_task.get("id"),
+                "campaign_id": payload.get("campaign_id"),
+                "task_batch_id": payload.get("task_batch_id"),
+                "task_batch_name": raw_task.get("taskBatchName"),
+                "title": title,
+                "description": title,
+                "tags": raw_task.get("tags") if isinstance(raw_task.get("tags"), list) else [],
+                "kind": "widget-layout",
+                "workflow_status": "unclaimed",
+                "stagecraft_task_status": raw_task.get("stagecraftTaskStatus"),
+                "status_updated_at": raw_task.get("statusUpdatedAt"),
+                "is_template_task": raw_task.get("isTemplateTask"),
+                "stage_key": stage.get("key"),
+                "stage_label": stage.get("label"),
+                "previous_stage_labels": result.get("previousStageLabels"),
+                "most_recently_decided_stage_label": result.get("mostRecentlyDecidedStageLabel"),
+                "most_recently_decided_stage_owner_id": owner.get("id"),
+                "most_recently_decided_stage_owner_email": owner.get("email"),
+                "claimed_at": result.get("claimedAt"),
+                "completed_at": result.get("completedAt"),
+            }
+        )
+
+    next_cursor = search.get("nextCursor")
+    pagination: dict[str, Any] = {
+        "page": int(payload.get("_cursor_page") or 0),
+        "page_size": int(payload.get("page_size") or 20),
+        "cursor": payload.get("cursor"),
+        "next_cursor": next_cursor,
+        "search_api": "stagecraft",
+    }
+    if not payload.get("cursor") and not next_cursor:
+        pagination["count"] = len(tasks)
+    return {"tasks": tasks, "pagination": pagination}
+
+
+def legacy_task_detail_payload(campaign_id: str, task_id: str) -> dict[str, Any]:
+    payload = default_search_payload(campaign_id, 20)
+    payload["workflow_statuses"] = [
+        "unclaimed",
+        "in_progress",
+        "completed",
+        "needs_work",
+        "in_review",
+        "signed_off",
+        "cancelled",
+        "escalated",
+        "escalation_resolved",
+        "fixing_done",
+        "paused",
+    ]
+    payload["exclude_declined"] = False
+    payload["include_tags"] = True
+    payload["query"] = task_id
+    return payload
+
+
+def enrich_stagecraft_search_tasks(
+    data: dict[str, Any],
+    headers: dict[str, str],
+    campaign_id: str,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Restore batch metadata omitted by campaign-wide StagecraftSearch results."""
+    raw_tasks = data.get("tasks") if isinstance(data, dict) else None
+    tasks = raw_tasks if isinstance(raw_tasks, list) else []
+    enriched_tasks: list[dict[str, Any]] = []
+    missing_task_ids: list[str] = []
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        if task.get("task_batch_name"):
+            enriched_tasks.append(task)
+            continue
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            continue
+        response = request_with_retries(
+            "POST",
+            SEARCH_URL,
+            headers=headers,
+            data=json.dumps(legacy_task_detail_payload(campaign_id, task_id), separators=(",", ":")),
+            session=session,
+        )
+        if response.status_code in (401, 403):
+            raise RuntimeError(f"auth failed during task metadata lookup: HTTP {response.status_code}")
+        response.raise_for_status()
+        body = response.json()
+        details = body.get("tasks") if isinstance(body, dict) else None
+        detail = next(
+            (
+                candidate
+                for candidate in (details if isinstance(details, list) else [])
+                if isinstance(candidate, dict) and str(candidate.get("id") or "") == task_id
+            ),
+            None,
+        )
+        if not isinstance(detail, dict) or not (
+            detail.get("task_batch_name") or detail.get("batch_name")
+        ):
+            missing_task_ids.append(task_id)
+            continue
+        enriched = dict(task)
+        for key in ("task_batch_id", "task_batch_name", "batch_name", "kind"):
+            if detail.get(key) is not None:
+                enriched[key] = detail[key]
+        enriched_tasks.append(enriched)
+
+    result = dict(data)
+    result["tasks"] = enriched_tasks
+    if missing_task_ids:
+        result["metadata_lookup_missing_task_ids"] = missing_task_ids
+    return result
+
+
 def poll_once(
     headers: dict[str, str],
     payload: dict[str, Any],
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
+    stagecraft = is_stagecraft_search_payload(payload)
     response = request_with_retries(
         "POST",
-        SEARCH_URL,
+        GRAPHQL_URL if stagecraft else SEARCH_URL,
         headers=headers,
-        data=json.dumps(payload, separators=(",", ":")),
+        data=json.dumps(
+            stagecraft_search_request_payload(payload) if stagecraft else payload,
+            separators=(",", ":"),
+        ),
         session=session,
     )
     if response.status_code in (401, 403):
         raise RuntimeError(f"auth failed: HTTP {response.status_code} {response.text[:160]}")
     response.raise_for_status()
-    return response.json()
+    body = response.json()
+    if not stagecraft:
+        return body
+    normalized = normalize_stagecraft_search_response(body, payload)
+    return enrich_stagecraft_search_tasks(
+        normalized,
+        headers,
+        str(payload.get("campaign_id") or ""),
+        session=session,
+    )
 
 
 def task_page_signature(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
@@ -867,6 +1172,54 @@ def task_page_signature(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
         str(task.get("id") or json.dumps(task, sort_keys=True, default=str))
         for task in tasks
     )
+
+
+def poll_all_cursor_pages(
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    max_pages: int,
+    first_page: dict[str, Any] | None,
+    stop_requested: Callable[[], bool] | None,
+    session: requests.Session | None,
+) -> list[dict[str, Any]]:
+    cursor_payload = dict(payload)
+    cursor_payload["_cursor_page"] = 0
+    pages: list[dict[str, Any]] = []
+    seen_page_signatures: set[tuple[str, ...]] = set()
+    seen_cursors: set[str] = set()
+    pending_first_page = first_page
+
+    for page_index in range(max_pages):
+        if pages and stop_requested is not None and stop_requested():
+            break
+        if pending_first_page is not None:
+            data = pending_first_page
+            pending_first_page = None
+        elif session is None:
+            data = poll_once(headers, cursor_payload)
+        else:
+            data = poll_once(headers, cursor_payload, session=session)
+
+        raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
+        tasks = raw_tasks if isinstance(raw_tasks, list) else []
+        signature = task_page_signature(tasks)
+        if signature and signature in seen_page_signatures:
+            break
+        if signature:
+            seen_page_signatures.add(signature)
+        pages.append(data)
+
+        pagination = data.get("pagination") if isinstance(data, dict) else None
+        pagination = pagination if isinstance(pagination, dict) else {}
+        next_cursor = str(pagination.get("next_cursor") or "").strip()
+        if not next_cursor or next_cursor in seen_cursors:
+            break
+        seen_cursors.add(next_cursor)
+        cursor_payload = dict(cursor_payload)
+        cursor_payload["cursor"] = next_cursor
+        cursor_payload["_cursor_page"] = page_index + 1
+
+    return pages
 
 
 def poll_all_pages(
@@ -880,6 +1233,16 @@ def poll_all_pages(
     """Fetch every task-search page, stopping safely on an empty or repeated page."""
     if max_pages < 1:
         raise ValueError("max_pages must be >= 1")
+
+    if is_stagecraft_search_payload(payload):
+        return poll_all_cursor_pages(
+            headers,
+            payload,
+            max_pages,
+            first_page,
+            stop_requested,
+            session,
+        )
 
     page_payload = dict(payload)
     try:
@@ -949,7 +1312,11 @@ def campaign_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
     campaign_payload = dict(payload)
     campaign_payload.pop("task_batch_id", None)
     campaign_payload.pop("random_seed", None)
-    campaign_payload["page"] = 0
+    if is_stagecraft_search_payload(campaign_payload):
+        campaign_payload["cursor"] = None
+        campaign_payload["_cursor_page"] = 0
+    else:
+        campaign_payload["page"] = 0
     return campaign_payload
 
 
@@ -981,13 +1348,12 @@ def search_total_count(data: dict[str, Any]) -> int | None:
 def claim_payload(task_id: str) -> list[dict[str, Any]]:
     return [
         {
-            "operationName": "UpdateTaskStatus",
+            "operationName": "StagecraftClaimStage",
             "variables": {
                 "taskId": task_id,
-                "status": "IN_PROGRESS",
-                "skipFormVersionIds": [],
+                "stageKey": "task",
             },
-            "query": UPDATE_TASK_STATUS_QUERY,
+            "query": STAGECRAFT_CLAIM_STAGE_QUERY,
         }
     ]
 
@@ -1311,13 +1677,12 @@ def print_claim_result(
         else:
             first = body if isinstance(body, dict) else {}
         data = first.get("data") if isinstance(first, dict) else None
-        update = data.get("updateTaskStatus") if isinstance(data, dict) else None
+        update = data.get("stagecraftClaimStage") if isinstance(data, dict) else None
         definitive_result = bool(isinstance(first, dict) and (isinstance(update, dict) or first.get("errors")))
         claim_succeeded = (
             response.status_code == 200
             and isinstance(update, dict)
             and update.get("id") == task_id
-            and str(update.get("workflowStatus") or "").upper() == "IN_PROGRESS"
             and not first.get("errors")
         )
         if not claim_succeeded:
@@ -1498,9 +1863,17 @@ def _run_monitor_impl(
 
     curl_text = read_curl_text(config.curl_file)
     cookie, payload = request_parts_from_curl(curl_text, config.campaign_id, config.page_size)
+    client_git_hash = header_value(curl_text, "x-feather-client-git-hash") or CLIENT_GIT_HASH
+    user_agent = header_value(curl_text, "user-agent")
     payload["include_tags"] = True
     campaign_url = f"{BASE_URL}/campaigns/{config.campaign_id}?tab=tasks&tasks-tab=unclaimed"
-    search_headers = build_headers(cookie, config.campaign_id, campaign_url)
+    search_headers = build_headers(
+        cookie,
+        config.campaign_id,
+        campaign_url,
+        client_git_hash=client_git_hash,
+        user_agent=user_agent,
+    )
     user = current_user(search_headers, session=session)
     credential_account = credential_account_summary(user)
     update_status(
@@ -1713,7 +2086,10 @@ def _run_monitor_impl(
             else:
                 total_unclaimed_count = search_total_count(probe_data)
                 campaign_page_total = search_page_count(probe_data, probe_payload)
-                if campaign_page_total is not None and campaign_page_total <= len(search_payloads):
+                if is_stagecraft_search_payload(probe_payload) or (
+                    campaign_page_total is not None
+                    and campaign_page_total <= len(search_payloads)
+                ):
                     try:
                         if stop_event is None:
                             campaign_pages = poll_all_pages(
@@ -1745,6 +2121,15 @@ def _run_monitor_impl(
                     else:
                         search_mode = "campaign"
                         page_searches += max(0, len(campaign_pages) - 1)
+                        if total_unclaimed_count is None:
+                            total_unclaimed_count = len(
+                                {
+                                    str(task.get("id") or "").strip()
+                                    for page in campaign_pages
+                                    for task in page.get("tasks", [])
+                                    if str(task.get("id") or "").strip()
+                                }
+                            )
                         searches_to_run = []
                         last_distribution_full_scan_at = time.monotonic()
                 else:
@@ -2138,9 +2523,11 @@ def _run_monitor_impl(
                 claim_headers = build_headers(
                     cookie,
                     config.campaign_id,
-                    task_url(task_id),
+                    task_stage_url(task_id),
                     task_id=task_id,
                     task_kind=config.task_kind or task.get("kind"),
+                    client_git_hash=client_git_hash,
+                    user_agent=user_agent,
                 )
                 task_history = claim_history_cache.get(str(task_id))
                 if task_history is None:
