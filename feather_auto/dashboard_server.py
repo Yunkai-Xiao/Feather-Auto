@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from . import __version__
 from .cli import (
     BASE_URL,
     MonitorConfig,
@@ -251,6 +252,7 @@ def dashboard_runtime() -> dict[str, Any]:
             paddle_version = "unknown"
     venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
     return {
+        "app_version": __version__,
         "python_executable": sys.executable,
         "sys_prefix": sys.prefix,
         "base_prefix": getattr(sys, "base_prefix", ""),
@@ -1016,7 +1018,7 @@ def test_batch_regex(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def dashboard_state() -> dict[str, Any]:
-    return MONITOR.state()
+    return {**MONITOR.state(), "version": __version__}
 
 
 def distribution_history(query: dict[str, list[str]]) -> dict[str, Any]:
@@ -1177,6 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
     maybe_update_from_git(argv)
 
     parser = argparse.ArgumentParser(description="Run the Feather Auto dashboard server.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
@@ -1184,6 +1187,7 @@ def main(argv: list[str] | None = None) -> int:
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     DASHBOARD_PID_FILE.write_text(str(os.getpid()), encoding="ascii")
+    print(f"Feather Auto v{__version__}", flush=True)
     print(f"Dashboard: http://{args.host}:{args.port}/dashboard.html", flush=True)
     try:
         server.serve_forever()

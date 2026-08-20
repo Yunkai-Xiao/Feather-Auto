@@ -69,6 +69,13 @@
         font-weight: 700;
       }
 
+      .app-version {
+        margin-left: 6px;
+        color: #aab3c1;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
       .pathline {
         margin-top: 4px;
         max-width: 920px;
@@ -1230,7 +1237,7 @@
     <div class="app">
       <header class="topbar">
         <div>
-          <h1>Feather Auto Monitor</h1>
+          <h1>Feather Auto Monitor <span class="app-version" id="appVersion">v...</span></h1>
           <div class="pathline" id="paths">Loading paths...</div>
         </div>
         <div class="credential-pill" id="credentialAccountPill" aria-live="polite">
@@ -2966,6 +2973,8 @@
         const pollSnapshot = parseLatestPoll(latest.log_tail);
         updateActiveSession(status, running);
         sendHeartbeat();
+
+        setText("appVersion", latest.version ? `v${latest.version}` : "unknown");
 
         renderReviewModes(latest.review_modes, status.review_mode);
         renderCampaigns(latest.campaigns, status.campaign_id);

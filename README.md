@@ -6,6 +6,10 @@ claiming the first task that matches a batch filter.
 The main workflow is the local web dashboard. The CLI is kept as a fallback for
 scripted checks and debugging.
 
+The current application version is shown beside the Dashboard title and at the
+start of each Dashboard/monitor log. You can also check it from PowerShell with
+`python -m feather_auto.cli --version`.
+
 ## What It Does
 
 - Polls Feather's task search API with your own logged-in session cookie.

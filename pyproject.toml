@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feather-auto"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Monitor and optionally claim Feather tasks matching batch filters."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,3 +23,6 @@ feather-coordination = "feather_auto.coordination:main"
 
 [tool.setuptools]
 packages = ["feather_auto"]
+
+[tool.setuptools.dynamic]
+version = {attr = "feather_auto.__version__"}

@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import requests
 
+from . import __version__
 from .coordination import (
     CoordinationConfig,
     CoordinationError,
@@ -1731,6 +1732,7 @@ def print_claim_result(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Monitor and optionally claim Feather tasks.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--curl-file", help="File containing a Feather Copy-as-cURL request.")
     parser.add_argument("--interval", type=float, default=1.0)
@@ -2709,6 +2711,7 @@ def run_monitor(
     emit: Emit = print,
     status_callback: StatusCallback | None = None,
 ) -> int:
+    emit(f"FEATHER_AUTO_VERSION {__version__}", flush=True)
     session = create_http_session()
     try:
         return _run_monitor_impl(
