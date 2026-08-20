@@ -211,6 +211,59 @@ class AdaptiveSearchTests(unittest.TestCase):
             any("search_mode=batch campaign_pages=10 matched_batches=2" in message for message in messages)
         )
 
+    @patch("feather_auto.cli.poll_all_pages")
+    @patch("feather_auto.cli.poll_once")
+    @patch("feather_auto.cli.resolve_batch_searches")
+    @patch("feather_auto.cli.request_parts_from_curl")
+    @patch("feather_auto.cli.read_curl_text", return_value="curl")
+    @patch("feather_auto.cli.current_user", return_value={"id": "user-1", "email": "user@example.com"})
+    def test_stagecraft_cursor_search_prefers_one_campaign_scan(
+        self,
+        _current_user,
+        _read_curl,
+        request_parts,
+        resolve_searches,
+        poll_once,
+        poll_all_pages,
+    ):
+        base_payload = {
+            "_search_api": "stagecraft",
+            "campaign_id": "campaign-a",
+            "page_size": 20,
+            "task_batch_id": "copied",
+            "cursor": None,
+        }
+        request_parts.return_value = ("cookie", base_payload)
+        resolve_searches.return_value = self.batch_searches()
+        probe = {
+            "tasks": [],
+            "pagination": {
+                "page": 0,
+                "page_size": 20,
+                "next_cursor": "cursor-2",
+                "search_api": "stagecraft",
+            },
+        }
+        poll_once.return_value = probe
+        poll_all_pages.return_value = [probe]
+
+        self.assertEqual(0, run_monitor(self.config(), emit=lambda *_args, **_kwargs: None))
+
+        campaign_payload = {
+            "_search_api": "stagecraft",
+            "campaign_id": "campaign-a",
+            "page_size": 20,
+            "cursor": None,
+            "include_tags": True,
+            "_cursor_page": 0,
+        }
+        poll_all_pages.assert_called_once_with(
+            ANY,
+            campaign_payload,
+            first_page=probe,
+            session=ANY,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ from .cli import (
     credential_account_summary,
     current_user,
     effective_batch_regex,
+    header_value,
     request_parts_from_curl,
     run_monitor,
     tag_count_filter_payload,
@@ -930,7 +931,13 @@ def credential_request_context(config: dict[str, Any]) -> tuple[str, dict[str, s
 
     cookie, _payload = request_parts_from_curl(curl_text, campaign_id, page_size=20)
     campaign_url = f"{BASE_URL}/campaigns/{campaign_id}?tab=tasks&tasks-tab=unclaimed"
-    return campaign_id, build_headers(cookie, campaign_id, campaign_url)
+    return campaign_id, build_headers(
+        cookie,
+        campaign_id,
+        campaign_url,
+        client_git_hash=header_value(curl_text, "x-feather-client-git-hash"),
+        user_agent=header_value(curl_text, "user-agent"),
+    )
 
 
 def verified_credential_account(

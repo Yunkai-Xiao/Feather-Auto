@@ -13,7 +13,7 @@ from urllib import error, request
 BASE_URL = "https://feather.openai.com"
 GRAPHQL_URL = f"{BASE_URL}/api/graphql"
 DEFAULT_CURL_FILE = Path("outputs/current_feather_request.curl.txt")
-CLIENT_GIT_HASH = "befa13b162c"
+CLIENT_GIT_HASH = "37d9a5642ed"
 FETCH_SLIDE_CONVERSATION_WIDGET_QUERY = """
 query FetchSlideConversationWidget($taskId: UUID!, $layoutKey: String!) {
   conversationWidget(taskId: $taskId, layoutKey: $layoutKey) {

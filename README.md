@@ -114,10 +114,11 @@ pip install -r requirements.txt
 1. Open Feather in your browser while logged in.
 2. Open DevTools, then the Network tab.
 3. Refresh the campaign task page.
-4. Right-click a request like:
+4. Filter for `graphql`, then right-click the request whose payload has
+   `operationName: "StagecraftSearch"`:
 
 ```text
-https://feather.openai.com/api/v2/tasks/search
+https://feather.openai.com/api/graphql
 ```
 
 5. Choose `Copy as cURL`.
@@ -310,9 +311,9 @@ Behavior by mode:
 If a claim loses the race, for example Feather returns `NOT_FOUND`, the monitor
 logs `CLAIM_FAILED_CONTINUING` and continues polling.
 
-Each server-side batch search follows the API pagination metadata until all
-available task pages have been checked; `--page-size` controls requests per
-page, not the total number of tasks considered.
+Each Stagecraft search follows `nextCursor` until all available task pages have
+been checked; `--page-size` controls results per request, not the total number
+of tasks considered.
 
 Before claim mode starts and immediately before each claim attempt, the monitor
 checks whether the current account already has an `in_progress` task in the
@@ -577,7 +578,7 @@ When claim mode is enabled, the monitor:
 2. Acquires the optional shared-account coordination lease.
 3. Checks for an existing `in_progress` task assigned to the current account.
 4. Revalidates the lease immediately before claim.
-5. Sends the GraphQL `UpdateTaskStatus` mutation with `status=IN_PROGRESS`.
+5. Sends the GraphQL `StagecraftClaimStage` mutation with `stageKey=task`.
 6. Uses a definitive GraphQL result directly. Only an ambiguous response
    triggers a follow-up assignment search and `VERIFY` line.
 

@@ -27,9 +27,40 @@ class CurlCookieParsingTests(unittest.TestCase):
 
         self.assertEqual(cookie, "session=abc")
         self.assertEqual(payload["campaign_id"], "selected")
-        self.assertEqual(payload["page"], 0)
+        self.assertEqual(payload["_search_api"], "stagecraft")
+        self.assertIsNone(payload["cursor"])
         self.assertEqual(payload["page_size"], 20)
-        self.assertEqual(payload["workflow_statuses"], ["unclaimed"])
+        self.assertEqual(payload["filter"], "CLAIMABLE")
+        self.assertEqual(payload["tags_search_type"], "ALL")
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_reads_stagecraft_search_variables_and_resets_cursor(self) -> None:
+        curl_text = """curl 'https://feather.openai.com/api/graphql' \\
+  -b 'session=abc' \\
+  --data-raw '[{"operationName":"StagecraftSearch","variables":{"filter":"CLAIMABLE","pageSize":20,"campaignId":"copied","taskBatchId":"batch-1","cursor":"next-page","tagsSearchType":"ALL"},"query":"query StagecraftSearch { __typename }"}]'"""
+
+        cookie, payload = request_parts_from_curl(curl_text, "selected", 50)
+
+        self.assertEqual(cookie, "session=abc")
+        self.assertEqual(payload["_search_api"], "stagecraft")
+        self.assertEqual(payload["campaign_id"], "selected")
+        self.assertEqual(payload["task_batch_id"], "batch-1")
+        self.assertEqual(payload["page_size"], 50)
+        self.assertIsNone(payload["cursor"])
+
+    def test_stagecraft_request_normalizes_enum_case_defensively(self) -> None:
+        from feather_auto.cli import stagecraft_search_request_payload
+
+        request = stagecraft_search_request_payload(
+            {
+                "_search_api": "stagecraft",
+                "campaign_id": "campaign",
+                "page_size": 20,
+                "tags_search_type": "any",
+            }
+        )[0]
+
+        self.assertEqual(request["variables"]["tagsSearchType"], "ANY")
 
 
 if __name__ == "__main__":
